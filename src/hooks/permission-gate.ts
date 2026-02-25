@@ -9,7 +9,12 @@ import {
   Text,
   wrapTextWithAnsi,
 } from "@mariozechner/pi-tui";
-import type { DangerousPattern, ResolvedConfig } from "../config";
+import type {
+  DangerousPattern,
+  GuardrailsConfig,
+  PatternConfig,
+  ResolvedConfig,
+} from "../config";
 import { configLoader } from "../config";
 import { emitBlocked, emitDangerous } from "../utils/events";
 import {
@@ -227,7 +232,12 @@ export function setupPermissionGateHook(
         return { block: true, reason };
       }
 
-      type ConfirmResult = "allow" | "allow-session" | "deny";
+      type ConfirmResult =
+        | "allow"
+        | "allow-session"
+        | "allow-project"
+        | "allow-global"
+        | "deny";
 
       const result = await ctx.ui.custom<ConfirmResult>(
         (_tui, theme, _kb, done) => {
@@ -268,8 +278,15 @@ export function setupPermissionGateHook(
             new Text(
               theme.fg(
                 "dim",
-                "y/enter: allow • a: allow for session • n/esc: deny",
+                "y/enter: allow once • a: allow for session • n/esc: deny",
               ),
+              1,
+              0,
+            ),
+          );
+          container.addChild(
+            new Text(
+              theme.fg("dim", "p: allow for project • g: allow globally"),
               1,
               0,
             ),
@@ -291,6 +308,10 @@ export function setupPermissionGateHook(
                 done("allow");
               } else if (data === "a" || data === "A") {
                 done("allow-session");
+              } else if (data === "p" || data === "P") {
+                done("allow-project");
+              } else if (data === "g" || data === "G") {
+                done("allow-global");
               } else if (
                 matchesKey(data, Key.escape) ||
                 data === "n" ||
@@ -303,9 +324,128 @@ export function setupPermissionGateHook(
         },
       );
 
-      if (result === "allow-session") {
+      if (result === "deny") {
+        emitBlocked(pi, {
+          feature: "permissionGate",
+          toolName: "bash",
+          input: event.input,
+          reason: "User denied dangerous command",
+          userDenied: true,
+        });
+
+        return { block: true, reason: "User denied dangerous command" };
+      }
+
+      // For persistent scopes (project/global), ask what to save
+      if (result === "allow-project" || result === "allow-global") {
+        const isStructural = rawPattern === "(structural)";
+        type PatternChoice = "exact" | "class" | "cancel";
+        const patternResult = isStructural
+          ? ("exact" as PatternChoice)
+          : await ctx.ui.custom<PatternChoice>((_tui, theme, _kb, done) => {
+              const container = new Container();
+              const border = (s: string) => theme.fg("accent", s);
+
+              container.addChild(new DynamicBorder(border));
+              container.addChild(
+                new Text(
+                  theme.fg(
+                    "accent",
+                    theme.bold(
+                      `Allow ${result === "allow-project" ? "for Project" : "Globally"}`,
+                    ),
+                  ),
+                  1,
+                  0,
+                ),
+              );
+              container.addChild(new Spacer(1));
+              container.addChild(
+                new Text(theme.fg("text", "What should be allowed?"), 1, 0),
+              );
+              container.addChild(new Spacer(1));
+
+              // Option 1: exact command
+              const commandPreview =
+                command.length > 60
+                  ? `${command.substring(0, 57)}...`
+                  : command;
+              container.addChild(
+                new Text(
+                  `${theme.fg("accent", "e")}${theme.fg("dim", ")")} ${theme.fg("text", "This exact command:")} ${theme.fg("muted", commandPreview)}`,
+                  1,
+                  0,
+                ),
+              );
+              container.addChild(new Spacer(1));
+
+              // Option 2: pattern class
+              container.addChild(
+                new Text(
+                  `${theme.fg("accent", "c")}${theme.fg("dim", ")")} ${theme.fg("text", `All "${rawPattern}" commands`)}`,
+                  1,
+                  0,
+                ),
+              );
+              container.addChild(new Spacer(1));
+              container.addChild(
+                new Text(
+                  theme.fg(
+                    "dim",
+                    "e: exact command • c: command class • esc: cancel",
+                  ),
+                  1,
+                  0,
+                ),
+              );
+              container.addChild(new DynamicBorder(border));
+
+              return {
+                render: (width: number) => container.render(width),
+                invalidate: () => container.invalidate(),
+                handleInput: (data: string) => {
+                  if (data === "e" || data === "E") done("exact");
+                  else if (data === "c" || data === "C") done("class");
+                  else if (matchesKey(data, Key.escape)) done("cancel");
+                },
+              };
+            });
+
+        if (patternResult === "cancel") {
+          // User cancelled the scope selection — still allow the command this once
+          ctx.ui.notify("Command allowed once (not saved)", "info");
+        } else {
+          const scope = result === "allow-project" ? "local" : "global";
+          const patternToSave: PatternConfig =
+            patternResult === "exact"
+              ? { pattern: command }
+              : { pattern: rawPattern, regex: true };
+
+          // Read existing scope config to append (not replace)
+          const existing = configLoader.getRawConfig(scope);
+          const existingAllowed =
+            (existing as GuardrailsConfig | null)?.permissionGate
+              ?.allowedPatterns ?? [];
+
+          await configLoader.save(scope, {
+            ...((existing as GuardrailsConfig | null) ?? {}),
+            permissionGate: {
+              ...((existing as GuardrailsConfig | null)?.permissionGate ?? {}),
+              allowedPatterns: [...existingAllowed, patternToSave],
+            },
+          } as GuardrailsConfig);
+
+          // Update the local cache so it takes effect immediately
+          allowedPatterns.push(...compileCommandPatterns([patternToSave]));
+
+          const scopeLabel = result === "allow-project" ? "project" : "global";
+          ctx.ui.notify(
+            `Allowed pattern saved to ${scopeLabel} config`,
+            "info",
+          );
+        }
+      } else if (result === "allow-session") {
         // Save command as allowed in memory scope (session-only).
-        // Spread the resolved allowed patterns and append the new one.
         const resolved = configLoader.getConfig();
         await configLoader.save("memory", {
           permissionGate: {
@@ -318,18 +458,6 @@ export function setupPermissionGateHook(
 
         // Update the local cache so it takes effect immediately
         allowedPatterns.push(...compileCommandPatterns([{ pattern: command }]));
-      }
-
-      if (result === "deny") {
-        emitBlocked(pi, {
-          feature: "permissionGate",
-          toolName: "bash",
-          input: event.input,
-          reason: "User denied dangerous command",
-          userDenied: true,
-        });
-
-        return { block: true, reason: "User denied dangerous command" };
       }
     } else {
       // No confirmation required - just notify and allow
