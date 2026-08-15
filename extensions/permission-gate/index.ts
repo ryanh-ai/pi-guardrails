@@ -3,6 +3,7 @@ import {
   isToolCallEventType,
 } from "@earendil-works/pi-coding-agent";
 import { checkAction } from "../../src/core";
+import type { PatternConfig } from "../../src/shared/config";
 import { configLoader } from "../../src/shared/config";
 import {
   createFeatureRegisterPayload,
@@ -16,13 +17,81 @@ import {
   GUARDRAILS_PROMPT_OPENED_EVENT,
   setupLegacyPromptEventAlias,
 } from "../../src/shared/events";
-import { isCommandAllowed, saveCommandSessionGrant } from "./grants";
-import { createPermissionGateConfirmComponent } from "./prompt";
+import {
+  isCommandAllowed,
+  type PersistentPermissionGateScope,
+  saveCommandPersistentGrant,
+  saveCommandSessionGrant,
+} from "./grants";
+import {
+  createPermissionGateConfirmComponent,
+  type PermissionGateConfirmResult,
+} from "./prompt";
 import {
   createPermissionGateRule,
   formatAutoDenyReason,
   matchCommandPattern,
 } from "./rules";
+
+type ScopedGrantChoice = "exact" | "class" | "cancel";
+
+interface ScopedGrantPromptContext {
+  ui: {
+    select(prompt: string, options: string[]): Promise<string | undefined>;
+  };
+}
+
+function createScopedGrantPattern(
+  command: string,
+  matchedPattern: string,
+  choice: Exclude<ScopedGrantChoice, "cancel">,
+  configuredPatterns: PatternConfig[],
+): PatternConfig {
+  if (choice === "exact") return { pattern: command };
+
+  const configured = configuredPatterns.find(
+    (pattern) => pattern.pattern === matchedPattern,
+  );
+  if (configured) {
+    return {
+      pattern: configured.pattern,
+      ...(configured.regex === undefined ? {} : { regex: configured.regex }),
+      ...(configured.description === undefined
+        ? {}
+        : { description: configured.description }),
+    };
+  }
+
+  return { pattern: matchedPattern, regex: true };
+}
+
+async function chooseScopedGrantPattern(
+  ctx: ScopedGrantPromptContext,
+  command: string,
+  matchedPattern: string,
+): Promise<ScopedGrantChoice> {
+  if (matchedPattern === "(structural)") return "exact";
+
+  const commandPreview =
+    command.length > 80 ? `${command.slice(0, 77)}...` : command;
+  const classPreview =
+    matchedPattern.length > 80
+      ? `${matchedPattern.slice(0, 77)}...`
+      : matchedPattern;
+  const exact = `This exact command: ${commandPreview}`;
+  const commandClass = `All commands matching: ${classPreview}`;
+  const cancel = "Cancel (allow once without saving)";
+
+  const selection = await ctx.ui.select("What should be allowed?", [
+    exact,
+    commandClass,
+    cancel,
+  ]);
+
+  if (selection === commandClass) return "class";
+  if (selection === exact) return "exact";
+  return "cancel";
+}
 
 export default async function permissionGate(pi: ExtensionAPI) {
   await configLoader.load();
@@ -94,7 +163,6 @@ export default async function permissionGate(pi: ExtensionAPI) {
       return { block: true, reason };
     }
 
-    type ConfirmResult = "allow" | "allow-session" | "deny" | "stop";
     const promptOpened = createPromptOpenedPayload({
       feature: "permissionGate",
       action: safety.action,
@@ -107,23 +175,61 @@ export default async function permissionGate(pi: ExtensionAPI) {
     });
     pi.events.emit(GUARDRAILS_PROMPT_OPENED_EVENT, promptOpened);
 
-    let result: ConfirmResult;
+    let result: PermissionGateConfirmResult;
+    let scopedGrant: {
+      scope: PersistentPermissionGateScope;
+      pattern: PatternConfig;
+    } | null = null;
     try {
-      const customResult = await ctx.ui.custom<ConfirmResult>(
+      const customResult = await ctx.ui.custom<PermissionGateConfirmResult>(
         createPermissionGateConfirmComponent(command, safety.reason),
       );
 
       if (customResult === undefined) {
         const selection = await ctx.ui.select(
           `Dangerous command: ${safety.reason}`,
-          ["Allow once", "Allow for session", "Deny", "Decline and stop"],
+          [
+            "Allow once",
+            "Allow for session",
+            "Allow for project",
+            "Allow globally",
+            "Deny",
+            "Decline and stop",
+          ],
         );
         if (selection === "Allow once") result = "allow";
         else if (selection === "Allow for session") result = "allow-session";
+        else if (selection === "Allow for project") result = "allow-project";
+        else if (selection === "Allow globally") result = "allow-global";
         else if (selection === "Decline and stop") result = "stop";
         else result = "deny";
       } else {
         result = customResult;
+      }
+
+      if (result === "allow-project" || result === "allow-global") {
+        const scope: PersistentPermissionGateScope =
+          result === "allow-project" ? "local" : "global";
+        const choice = await chooseScopedGrantPattern(
+          ctx,
+          command,
+          safety.metadata.pattern,
+        );
+
+        if (choice === "cancel") {
+          ctx.ui.notify("Command allowed once (not saved)", "info");
+          result = "allow";
+        } else {
+          scopedGrant = {
+            scope,
+            pattern: createScopedGrantPattern(
+              command,
+              safety.metadata.pattern,
+              choice,
+              config.permissionGate.patterns,
+            ),
+          };
+        }
       }
     } finally {
       pi.events.emit(
@@ -135,6 +241,16 @@ export default async function permissionGate(pi: ExtensionAPI) {
     if (result === "allow") return;
     if (result === "allow-session") {
       await saveCommandSessionGrant(command);
+      return;
+    }
+
+    if (result === "allow-project" || result === "allow-global") {
+      if (!scopedGrant) return;
+      await saveCommandPersistentGrant(scopedGrant.scope, scopedGrant.pattern);
+      ctx.ui.notify(
+        `Allowed pattern saved to ${scopedGrant.scope === "local" ? "project" : "global"} config`,
+        "info",
+      );
       return;
     }
 

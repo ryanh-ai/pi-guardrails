@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { NOOP_THEME } from "../../tests/utils/theme";
-import { createPermissionGateConfirmComponent } from "./prompt";
+import {
+  createPermissionGateConfirmComponent,
+  type PermissionGateConfirmResult,
+} from "./prompt";
 
-type ConfirmResult = "allow" | "allow-session" | "deny" | "stop";
+type ConfirmResult = PermissionGateConfirmResult;
 
 function mount(command: string, description = "recursive delete") {
   let captured: ConfirmResult | undefined;
@@ -48,6 +51,18 @@ describe("createPermissionGateConfirmComponent", () => {
     expect(result()).toBe("allow-session");
   });
 
+  it("grants project with p", () => {
+    const { component, result } = mount("rm -rf /");
+    component.handleInput("p");
+    expect(result()).toBe("allow-project");
+  });
+
+  it("grants global with g", () => {
+    const { component, result } = mount("rm -rf /");
+    component.handleInput("g");
+    expect(result()).toBe("allow-global");
+  });
+
   it("denies with n / esc", () => {
     const { component, result } = mount("rm -rf /");
     component.handleInput("n");
@@ -78,8 +93,11 @@ describe("createPermissionGateConfirmComponent", () => {
     const output = Array.isArray(rendered)
       ? rendered.join("\n")
       : String(rendered);
-    expect(output).toContain("s: decline &");
+    expect(output).toContain("s:");
+    expect(output).toContain("decline &");
     expect(output).toContain("stop");
     expect(output).toContain("n/esc: deny");
+    expect(output).toContain("p: allow for project");
+    expect(output).toContain("g: allow globally");
   });
 });

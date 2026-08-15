@@ -95,6 +95,14 @@ function buildRightAlignedBorder(
   return themeLine("─".repeat(Math.max(0, remaining)) + truncatedLabel);
 }
 
+export type PermissionGateConfirmResult =
+  | "allow"
+  | "allow-session"
+  | "allow-project"
+  | "allow-global"
+  | "deny"
+  | "stop";
+
 export function createPermissionGateConfirmComponent(
   command: string,
   description: string,
@@ -103,7 +111,7 @@ export function createPermissionGateConfirmComponent(
     tui: { terminal: { rows: number; columns: number }; requestRender(): void },
     theme: MinimalTheme,
     _kb: unknown,
-    done: (result: "allow" | "allow-session" | "deny" | "stop") => void,
+    done: (result: PermissionGateConfirmResult) => void,
   ) => {
     const container = new Container();
     const redBorder = (s: string) => theme.fg("error", s);
@@ -140,8 +148,15 @@ export function createPermissionGateConfirmComponent(
       new Text(
         theme.fg(
           "dim",
-          "↑/↓ or j/k: scroll • y/enter: allow • a: session • n/esc: deny • s: decline & stop",
+          "↑/↓ or j/k: scroll • y/enter: allow once • a: session • n/esc: deny • s: decline & stop",
         ),
+        1,
+        0,
+      ),
+    );
+    container.addChild(
+      new Text(
+        theme.fg("dim", "p: allow for project • g: allow globally"),
         1,
         0,
       ),
@@ -209,6 +224,10 @@ export function createPermissionGateConfirmComponent(
           done("allow");
         } else if (data === "a" || data === "A") {
           done("allow-session");
+        } else if (data === "p" || data === "P") {
+          done("allow-project");
+        } else if (data === "g" || data === "G") {
+          done("allow-global");
         } else if (
           matchesKey(data, Key.escape) ||
           data === "n" ||

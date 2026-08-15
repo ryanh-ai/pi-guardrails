@@ -13,6 +13,7 @@ import {
   type PartialFuncReturn,
 } from "@golevelup/ts-vitest";
 import { assert, beforeEach, describe, expect, it, vi } from "vitest";
+import { configLoader } from "../../src/shared/config";
 import {
   GUARDRAILS_ACTION_BLOCKED_EVENT,
   GUARDRAILS_FEATURE_REGISTER_EVENT,
@@ -44,6 +45,8 @@ vi.mock("../../src/shared/config", () => {
     configLoader: {
       load: vi.fn().mockResolvedValue(undefined),
       getConfig: vi.fn(() => makeConfig()),
+      getRawConfig: vi.fn(() => null),
+      save: vi.fn().mockResolvedValue(undefined),
     },
   };
 });
@@ -83,6 +86,7 @@ describe("permissionGate extension hook", () => {
   let toolCallHandler: ToolCallHandler | undefined;
 
   beforeEach(async () => {
+    vi.clearAllMocks();
     pi = createMock<ExtensionAPI>();
     await permissionGate(pi);
     toolCallHandler = registeredToolCallHandler(pi);
@@ -195,6 +199,91 @@ describe("permissionGate extension hook", () => {
     expect(pi).toHaveEmitted(
       GUARDRAILS_PROMPT_CLOSED_EVENT,
       expect.objectContaining({ prompt: { id: opened.prompt.id } }),
+    );
+  });
+
+  it("allow for project saves an exact command grant to local config after the scope prompt", async () => {
+    assert(toolCallHandler, "tool_call handler should be registered");
+
+    vi.mocked(configLoader.getRawConfig).mockReturnValueOnce({
+      permissionGate: { allowedPatterns: [{ pattern: "existing" }] },
+    });
+    const select = vi.fn((_prompt: string, options: string[]) =>
+      Promise.resolve(options[0]),
+    );
+    const ctx = createCtx({
+      ui: {
+        custom: vi.fn().mockResolvedValue("allow-project"),
+        notify: vi.fn(),
+        select,
+      },
+    });
+
+    const result = await toolCallHandler(DANGEROUS_EVENT, ctx);
+
+    expect(result).toBeUndefined();
+    expect(select).toHaveBeenCalledWith(
+      "What should be allowed?",
+      expect.arrayContaining([
+        expect.stringContaining("This exact command"),
+        expect.stringContaining("All commands matching"),
+        "Cancel (allow once without saving)",
+      ]),
+    );
+    expect(configLoader.save).toHaveBeenCalledWith(
+      "local",
+      expect.objectContaining({
+        permissionGate: expect.objectContaining({
+          allowedPatterns: [
+            { pattern: "existing" },
+            { pattern: "dangerous-cmd" },
+          ],
+        }),
+      }),
+    );
+
+    const openedIndex = pi.events.emit.mock.calls.findIndex(
+      ([event]) => event === GUARDRAILS_PROMPT_OPENED_EVENT,
+    );
+    const closedIndex = pi.events.emit.mock.calls.findIndex(
+      ([event]) => event === GUARDRAILS_PROMPT_CLOSED_EVENT,
+    );
+    expect(openedIndex).toBeGreaterThanOrEqual(0);
+    expect(closedIndex).toBeGreaterThan(openedIndex);
+    expect(pi.events.emit.mock.invocationCallOrder[openedIndex]).toBeLessThan(
+      select.mock.invocationCallOrder[0],
+    );
+    expect(
+      pi.events.emit.mock.invocationCallOrder[closedIndex],
+    ).toBeGreaterThan(select.mock.invocationCallOrder[0]);
+  });
+
+  it("allow globally can save the matching command class to global config", async () => {
+    assert(toolCallHandler, "tool_call handler should be registered");
+
+    const select = vi.fn((_prompt: string, options: string[]) =>
+      Promise.resolve(options[1]),
+    );
+    const ctx = createCtx({
+      ui: {
+        custom: vi.fn().mockResolvedValue("allow-global"),
+        notify: vi.fn(),
+        select,
+      },
+    });
+
+    const result = await toolCallHandler(DANGEROUS_EVENT, ctx);
+
+    expect(result).toBeUndefined();
+    expect(configLoader.save).toHaveBeenCalledWith(
+      "global",
+      expect.objectContaining({
+        permissionGate: expect.objectContaining({
+          allowedPatterns: [
+            { pattern: "dangerous-cmd", description: "test danger" },
+          ],
+        }),
+      }),
     );
   });
 
