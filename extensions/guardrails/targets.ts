@@ -1,13 +1,16 @@
 import { parse } from "@aliou/sh";
 import { maybePathLike } from "../../src/core/paths";
 import {
+  isFdDuplicationRedirect,
+  isHeredocRedirect,
+  takesNoFileOperands,
   walkCommands,
   wordHasExpansion,
   wordToString,
 } from "../../src/core/shell";
 import { expandGlob, hasGlobChars } from "../../src/shared/glob";
 import type { CompiledPolicy } from "./rules";
-import { normalizeTarget } from "./rules";
+import { candidateTargetForms, normalizeTarget } from "./rules";
 
 /** A path extracted from a tool invocation, ready for policy matching. */
 export interface ExtractedTarget {
@@ -46,10 +49,14 @@ export async function extractTargets(
   const maybeAdd = async (candidate: string, unresolved: boolean) => {
     if (!candidate || candidate.startsWith("-")) return;
     for (const file of await expandCandidate(candidate)) {
-      const normalized = normalizeTarget(file, cwd);
+      const forms = unresolved
+        ? [normalizeTarget(file, cwd)]
+        : candidateTargetForms(file, cwd);
       if (
         policies.some((policy) =>
-          policy.patterns.some((pattern) => pattern.test(normalized)),
+          policy.patterns.some((pattern) =>
+            forms.some((form) => pattern.test(form)),
+          ),
         )
       ) {
         // If the same path surfaces both resolved and unresolved, treat it as
@@ -62,17 +69,36 @@ export async function extractTargets(
   try {
     const { ast } = parse(command);
     const pending: Promise<void>[] = [];
-    walkCommands(ast, (cmd) => {
-      for (const word of (cmd.words ?? []).slice(1)) {
-        pending.push(maybeAdd(wordToString(word), wordHasExpansion(word)));
-      }
-      for (const redir of cmd.redirects ?? []) {
-        pending.push(
-          maybeAdd(wordToString(redir.target), wordHasExpansion(redir.target)),
-        );
-      }
-      return false;
-    });
+    walkCommands(
+      ast,
+      (cmd, redirects) => {
+        const words = cmd?.words ?? [];
+        // Commands with no file operands (`echo`, `printf`, `tr` — a set closed
+        // by their POSIX grammars) take their argv as pure text: a protected
+        // file name passed as data, e.g. `printf '%s\n' '.env'`, is not file
+        // access. Redirects on the same command still surface below.
+        const commandName = words[0] ? wordToString(words[0]) : "";
+        if (!takesNoFileOperands(commandName)) {
+          for (const word of words.slice(1)) {
+            pending.push(maybeAdd(wordToString(word), wordHasExpansion(word)));
+          }
+        }
+        for (const redir of redirects ?? []) {
+          // Fd duplications (`2>&1`) have no filesystem target.
+          if (isFdDuplicationRedirect(redir)) continue;
+          // Heredoc delimiters and here-strings are text, not file targets.
+          if (isHeredocRedirect(redir)) continue;
+          pending.push(
+            maybeAdd(
+              wordToString(redir.target),
+              wordHasExpansion(redir.target),
+            ),
+          );
+        }
+        return false;
+      },
+      { includeSubstitutions: true },
+    );
     await Promise.all(pending);
   } catch {
     const tokenRegex = /"([^"]+)"|'([^']+)'|`([^`]+)`|([^\s"'`<>|;&]+)/g;

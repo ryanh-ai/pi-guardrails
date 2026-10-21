@@ -1,2 +1,14 @@
-export { walkCommands, wordHasExpansion, wordToString } from "./ast";
-export { type ClassifiedArg, classifyCommandArgs } from "./command-args";
+export {
+  type CommandCallback,
+  isFdDuplicationRedirect,
+  isHeredocRedirect,
+  type WalkCommandsOptions,
+  walkCommands,
+  wordHasExpansion,
+  wordToString,
+} from "./ast";
+export {
+  type ClassifiedArg,
+  classifyCommandArgs,
+  takesNoFileOperands,
+} from "./command-args";

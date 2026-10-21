@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { parse as parsePath, resolve } from "node:path";
 import { parse } from "@aliou/sh";
 import {
   expandHomePath,
@@ -9,14 +9,16 @@ import {
 import {
   commandCreatesPaths,
   hasNonPathShape,
-  hasShellExpansion,
   isImplausibleLocalPath,
 } from "../../core/paths/plausibility";
-import { walkCommands, wordToString } from "../../core/shell/ast";
 import {
-  classifyCommandArgs,
-  isInterpreterCommand,
-} from "../../core/shell/command-args";
+  isFdDuplicationRedirect,
+  isHeredocRedirect,
+  walkCommands,
+  wordHasExpansion,
+  wordToString,
+} from "../../core/shell/ast";
+import { classifyCommandArgs } from "../../core/shell/command-args";
 import { expandGlob, hasGlobChars } from "../glob";
 
 async function expandCandidate(
@@ -66,25 +68,27 @@ export async function extractBashPathCandidates(
     forcePath = false,
     commandName?: string,
     commandArgs: string[] = [],
+    programText = false,
+    mayExpand = false,
   ): Promise<void> => {
     if (!token || token.startsWith("-")) return;
     if (!forcePath && !maybePathLike(token)) return;
     if (!forcePath && hasNonPathShape(token)) return;
 
-    // Suppression is skipped whenever the filesystem cannot settle the
-    // question: the command creates missing parents itself (known
-    // path-creating commands, looked up through wrappers such as `sudo` or
-    // `npx`), the command runs an arbitrary program, or the token still
-    // contains an unexpanded shell reference.
+    // Suppression is skipped when the token may create its missing parent,
+    // or when shell expansion means the filesystem cannot settle it yet.
     const skipImplausible =
       forcePath ||
-      hasShellExpansion(token) ||
+      mayExpand ||
       commandCreatesPaths(commandName, commandArgs) ||
-      (commandName !== undefined && isInterpreterCommand(commandName));
+      programText;
 
     const expanded = await expandCandidate(token, cwd);
     for (const file of expanded) {
       const abs = resolve(cwd, expandHomePath(file));
+      // Tokens with repeated separators (`//`, `cat .//`) collapse to the
+      // filesystem root, which is never a meaningful prompt target.
+      if (parsePath(abs).root === abs) continue;
       // Only outside-workspace candidates are filtered: in-workspace paths are
       // always allowed downstream, so noise there cannot cause a prompt.
       if (
@@ -105,55 +109,84 @@ export async function extractBashPathCandidates(
     const { ast } = parse(command);
     const pending: Promise<void>[] = [];
 
-    walkCommands(ast, (cmd) => {
-      const words = (cmd.words ?? []).map(wordToString);
-      const commandName = words[0];
-      if (commandName) {
-        for (const arg of classifyCommandArgs(commandName, words.slice(1))) {
-          if (arg.recurseShell) {
-            if (depth >= MAX_SHELL_DEPTH) continue;
-            pending.push(
-              extractBashPathCandidates(arg.token, cwd, {
-                depth: depth + 1,
-                pathExists,
-              }).then((nested) => {
-                for (const abs of nested) {
-                  if (!seen.has(abs)) {
-                    seen.add(abs);
-                    results.push(abs);
+    walkCommands(
+      ast,
+      (cmd, redirects) => {
+        // Expansion is decided per source word from its AST parts, not from
+        // the flattened token: `wordToString` flattens quoting away, so the
+        // `$p` in a single-quoted sed range (`'/pat/,$p'`) is literal text
+        // that a token-level check would misread as an unexpanded variable.
+        // Key the flattened form so classified arguments can be looked up.
+        const expandedTokens = new Set<string>();
+        for (const word of cmd?.words ?? []) {
+          if (wordHasExpansion(word)) expandedTokens.add(wordToString(word));
+        }
+        for (const redir of redirects ?? []) {
+          // Fd duplications (`2>&1`, `<&-`) have no filesystem target.
+          // `&>`/`&>>` redirect stdout AND stderr to a real path — keep those.
+          if (isFdDuplicationRedirect(redir)) continue;
+          // Heredoc delimiters and here-strings are text, not file targets.
+          if (isHeredocRedirect(redir)) continue;
+          pending.push(addCandidate(wordToString(redir.target), true));
+        }
+        const words = (cmd?.words ?? []).map(wordToString);
+        const commandName = words[0];
+        if (commandName) {
+          for (const arg of classifyCommandArgs(commandName, words.slice(1))) {
+            if (arg.recurseShell) {
+              if (depth >= MAX_SHELL_DEPTH) continue;
+              pending.push(
+                extractBashPathCandidates(arg.token, cwd, {
+                  depth: depth + 1,
+                  pathExists,
+                }).then((nested) => {
+                  for (const abs of nested) {
+                    if (!seen.has(abs)) {
+                      seen.add(abs);
+                      results.push(abs);
+                    }
                   }
-                }
-              }),
-            );
-          } else {
+                }),
+              );
+            } else {
+              pending.push(
+                addCandidate(
+                  arg.token,
+                  arg.forcePath,
+                  commandName,
+                  words.slice(1),
+                  arg.programText,
+                  expandedTokens.has(arg.token),
+                ),
+              );
+            }
+          }
+        } else {
+          // Subshell fragments (e.g. the `\( ... \)` group of a find
+          // expression) arrive as commands with no name: the "words" are
+          // flags, patterns, and shell punctuation, not paths. Only keep
+          // tokens that look like real paths; skip lone `\` from escaped
+          // parens, which resolves to the drive root on Windows (issue #79).
+          for (const word of words) {
+            if (word === "\\" || word === "(" || word === ")" || word === "!")
+              continue;
+            if (word.startsWith("-") && word !== "-" && word !== "--") continue;
             pending.push(
               addCandidate(
-                arg.token,
-                arg.forcePath,
-                commandName,
-                words.slice(1),
+                word,
+                false,
+                undefined,
+                [],
+                false,
+                expandedTokens.has(word),
               ),
             );
           }
         }
-      } else {
-        // Subshell fragments (e.g. the `\( ... \)` group of a find
-        // expression) arrive as commands with no name: the "words" are
-        // flags, patterns, and shell punctuation, not paths. Only keep
-        // tokens that look like real paths; skip lone `\` from escaped
-        // parens, which resolves to the drive root on Windows (issue #79).
-        for (const word of words) {
-          if (word === "\\" || word === "(" || word === ")" || word === "!")
-            continue;
-          if (word.startsWith("-") && word !== "-" && word !== "--") continue;
-          pending.push(addCandidate(word));
-        }
-      }
-      for (const redir of cmd.redirects ?? []) {
-        pending.push(addCandidate(wordToString(redir.target), true));
-      }
-      return false;
-    });
+        return false;
+      },
+      { includeSubstitutions: true },
+    );
 
     await Promise.all(pending);
     return results;

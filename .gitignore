@@ -35,3 +35,5 @@ result-*
 
 # Husky
 .husky/_
+
+.worktrees

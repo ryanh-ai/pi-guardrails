@@ -535,6 +535,16 @@ export function registerGuardrailsSettings(
               values: ["allow", "ask", "block"],
             },
             {
+              id: "pathAccess.applyTo",
+              label: "Applies to",
+              description:
+                "all: gate reads and writes outside cwd, write: gate writes only (reads pass freely; bash is still gated)",
+              currentValue:
+                scopedConfig.pathAccess?.applyTo ??
+                `inherited: ${resolved.pathAccess.applyTo}`,
+              values: ["all", "write"],
+            },
+            {
               id: "pathAccess.allowedPaths",
               label: "Allowed paths",
               description:
@@ -544,6 +554,16 @@ export function registerGuardrailsSettings(
                 "pathAccess.allowedPaths",
                 "Allowed Paths",
               ),
+            },
+            {
+              id: "pathAccess.alwaysScope",
+              label: "Always-grant scope",
+              description:
+                "Where 'Allow … always' grants are saved. local: this project only, global: every project",
+              currentValue:
+                scopedConfig.pathAccess?.alwaysScope ??
+                `inherited: ${resolved.pathAccess.alwaysScope}`,
+              values: ["local", "global"],
             },
           ],
         },

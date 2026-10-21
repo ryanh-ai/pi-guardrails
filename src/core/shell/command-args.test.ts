@@ -135,6 +135,25 @@ describe("classifyCommandArgs", () => {
         "./data.json",
       ]);
     });
+
+    it("marks only inline code paths as program text", () => {
+      expect(
+        classifyCommandArgs("node", [
+          "./scripts/call_api.js",
+          "--endpoint",
+          "/safety/location/record/add",
+          "--payload",
+          "{}",
+        ]),
+      ).toEqual([
+        { token: "./scripts/call_api.js" },
+        { token: "/safety/location/record/add" },
+        { token: "{}" },
+      ]);
+      expect(
+        classifyCommandArgs("python3", ["-c", 'open("/etc/passwd")']),
+      ).toEqual([{ token: "/etc/passwd", programText: true }]);
+    });
   });
 
   describe("delimiter arguments", () => {
@@ -143,7 +162,35 @@ describe("classifyCommandArgs", () => {
     it("ignores delimiter args", () => {
       expect(tokens("cut", ["-d", "/", "./file"])).toEqual(["./file"]);
       expect(tokens("sort", ["-t", "/", "./file"])).toEqual(["./file"]);
+    });
+  });
+
+  describe("commands without file operands", () => {
+    // POSIX defines these grammars as pure text; argv tokens that name real
+    // files are data, not file access.
+    it("ignores every argument", () => {
+      expect(tokens("echo", [".env", "/etc/hosts"])).toEqual([]);
+      expect(tokens("printf", ["%s\\n", ".env"])).toEqual([]);
       expect(tokens("tr", ["/", ":"])).toEqual([]);
+    });
+  });
+
+  describe("remote command runners", () => {
+    // Argv naming paths on another machine is not local filesystem access;
+    // the rules lean on each command's own contract, not option tables.
+    it("drops ssh argv entirely", () => {
+      expect(
+        tokens("ssh", ["-i", "~/.ssh/id", "user@host", "cat", "/etc/passwd"]),
+      ).toEqual([]);
+      expect(tokens("ssh", ["user@host"])).toEqual([]);
+    });
+
+    it("drops kubectl argv passed through -- to the pod command", () => {
+      expect(
+        tokens("kubectl", ["exec", "-it", "pod/one", "--", "ls", "/app"]),
+      ).toEqual(["exec", "-it", "pod/one"]);
+      // Without `--` the argv is kubectl's own and stays classified as-is.
+      expect(tokens("kubectl", ["get", "pods"])).toEqual(["get", "pods"]);
     });
   });
 });

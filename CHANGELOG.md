@@ -1,5 +1,51 @@
 # @aliou/pi-guardrails
 
+## 0.19.0
+
+### Minor Changes
+
+- ef9db31: Merge Permission Gate pattern arrays (`patterns`, `allowedPatterns`, `autoDenyPatterns`) across config scopes instead of a project config replacing global entries. Previously, defining one of these arrays in `.pi/extensions/guardrails.json` silently dropped every global pattern, including auto-deny rules. Affected configs print a one-time notice on next load.
+- 585841e: Add per-rule `respectCwd` option (default `true`) so path-tree `readOnly`/`noAccess` policies no longer neuter the session working directory. Location-anchored patterns (`~`- or `/`-prefixed globs like `~/work/**`) are skipped for targets inside the cwd, while basename globs, relative path globs, and regex patterns keep applying, so secrets stay protected everywhere. Set `respectCwd: false` on a rule to restore strict enforcement. Fixes #100.
+
+### Patch Changes
+
+- 1aacdb1: Path extraction no longer treats non-file text as file access. Heredoc delimiters and here-strings (`cat <<'EOF'`) are skipped instead of surfacing the delimiter as a path; tokens that collapse to the filesystem root (`cat //`) are dropped; and `#` comments written after `|`, `&&` or `||` parse as the line continuations they are (via `@aliou/sh` 0.3.3, aliou/sh#24), so comment text and paths mentioned in it never surface as candidates or false policy blocks.
+- 1aacdb1: Remote command argv no longer reads as local filesystem access. Path extraction drops ssh argv entirely — nothing in it is reliably a local path (`-i` identity files stay unprompted as a consequence) — and drops the kubectl tail after `--`, which kubectl passes to the container command per its CLI contract. `ssh user@host 'cat /etc/passwd'` and `kubectl exec -it pod/one -- ls /app` no longer prompt for `/etc/passwd` or `/app` as local paths.
+- ac36ad9: Stop blocking bash commands when a protected file name is passed as pure text. `echo`, `printf`, and `tr` take no file operands by their POSIX grammars, so `printf '%s\n' '.env'` or `echo .env` no longer trigger the protected-file policy. Actual file operands keep working: reading `.env` with `cat`, or redirecting to it (`printf … > .env`), stays blocked.
+
+## 0.18.1
+
+### Patch Changes
+
+- c6a7be7: Treat `>& file` as a file redirect instead of file-descriptor duplication.
+- 101d143: Match session command grants against the exact command that was approved.
+
+## 0.18.0
+
+### Minor Changes
+
+- 92efa3d: Upgrade `@aliou/sh` to 0.3.1 and adapt the AST walker to its compound-redirect model.
+
+  **Fixed**
+
+  - **Heredoc command evasion** (permission gate): a dangerous command placed after a heredoc body (`cat <<EOF\n…\nEOF\nrm -rf …`) was folded into the heredoc command's words by `@aliou/sh` 0.2.x, so the structural matcher never saw it. 0.3.1 emits it as its own `SimpleCommand`, and the gate now matches it.
+  - **Compound-redirect extraction** (path access, guardrails targets): `@aliou/sh` 0.3.x attaches trailing redirects (`{ …; } > out`, `( … ) > out`, `while … done < in`, `if … fi > out`) to the compound node instead of an anonymous `SimpleCommand`. `walkCommands` now reports those redirects via an optional second callback argument, and both path extractors consume them — without this, upgrading would have silently stopped protecting compound-command redirect targets.
+  - **Fd-duplication noise**: `2>&1`, `3<&0`, `>&-` and friends target file descriptors, not files. New `isFdDuplicationRedirect` helper skips them during path extraction, so `echo hi 2>&1` no longer produces a bogus `./1` candidate. `&>`/`&>>` still resolve to a real file and are kept.
+
+  **Compatibility**
+
+  - `walkCommands` now passes `undefined` as the command for compound-redirect callbacks, so existing single-argument callbacks need a `cmd` guard before reading `cmd.words`.
+
+### Patch Changes
+
+- 31b466c: Bump `@aliou/sh` from 0.2.2 to 0.3.2. Picks up parser fixes for redirects on compound commands and named fd redirects; keeps the Node.js >=22 engine requirement.
+
+## 0.17.1
+
+### Patch Changes
+
+- 0f5d007: Fix path-access filtering for interpreter arguments so API-style paths passed to scripts are not treated as outside-workspace filesystem access while inline interpreter code remains guarded.
+
 ## 0.17.0
 
 ### Minor Changes

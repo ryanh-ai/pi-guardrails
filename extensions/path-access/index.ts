@@ -27,9 +27,13 @@ import {
   persistGrant,
   resolveAllowedPaths,
 } from "./grants";
-import { createPathAccessPromptComponent, type PromptResult } from "./prompt";
+import {
+  createPathAccessPromptComponent,
+  type PromptResult,
+  promptOptions,
+} from "./prompt";
 import { createPathAccessRule } from "./rules";
-import { targetsForTool } from "./targets";
+import { isReadOnlyTool, targetsForTool } from "./targets";
 
 export default async function pathAccess(pi: ExtensionAPI) {
   await configLoader.load();
@@ -70,6 +74,12 @@ export default async function pathAccess(pi: ExtensionAPI) {
     }
 
     const input = event.input as Record<string, unknown>;
+    if (
+      config.pathAccess.applyTo === "write" &&
+      isReadOnlyTool(event.toolName)
+    ) {
+      return;
+    }
     const bashCommand =
       event.toolName === "bash" ? String(input.command ?? "") : undefined;
     const targets = [
@@ -114,6 +124,8 @@ export default async function pathAccess(pi: ExtensionAPI) {
       const parentDir = dirname(absolutePath);
       const showFileOptions =
         event.toolName !== "ls" && event.toolName !== "find";
+      const dirPath = showFileOptions ? parentDir : absolutePath;
+      const dirGrantable = !isGrantTooBroad(dirPath);
       const promptOpened = createPromptOpenedPayload({
         feature: "pathAccess",
         action: safety.action,
@@ -126,18 +138,36 @@ export default async function pathAccess(pi: ExtensionAPI) {
       });
       pi.events.emit(GUARDRAILS_PROMPT_OPENED_EVENT, promptOpened);
 
-      let result: PromptResult | undefined;
+      let result: PromptResult;
       try {
-        result = await ctx.ui.custom<PromptResult>(
+        const customResult = await ctx.ui.custom<PromptResult>(
           createPathAccessPromptComponent(
             event.toolName,
             safety.metadata.displayPath,
             normalizeForDisplay(parentDir, ctx.cwd),
             ctx.cwd,
             showFileOptions,
-            bashCommand,
+            { command: bashCommand, dirGrantable },
           ),
         );
+
+        if (customResult === undefined) {
+          // RPC mode has no custom component support; fall back to a plain
+          // select with the same options as the TUI prompt.
+          const options = promptOptions(showFileOptions, dirGrantable);
+          const dirNote = showFileOptions
+            ? "\nDirectory grants apply to the parent directory."
+            : "";
+          const selection = await ctx.ui.select(
+            `Allow access to ${safety.metadata.displayPath}? (outside ${ctx.cwd})${dirNote}`,
+            options.map((option) => option.label),
+          );
+          result =
+            options.find((option) => option.label === selection)?.result ??
+            "deny";
+        } else {
+          result = customResult;
+        }
       } finally {
         pi.events.emit(
           GUARDRAILS_PROMPT_CLOSED_EVENT,
@@ -153,7 +183,9 @@ export default async function pathAccess(pi: ExtensionAPI) {
         const grant = createPendingGrant(
           absolutePath,
           false,
-          result === "allow-file-session" ? "memory" : "local",
+          result === "allow-file-session"
+            ? "memory"
+            : config.pathAccess.alwaysScope,
         );
         acceptedGrants.push(grant);
         await persistGrant(grant);
@@ -161,7 +193,8 @@ export default async function pathAccess(pi: ExtensionAPI) {
       }
 
       if (result === "allow-dir-session" || result === "allow-dir-always") {
-        const dirPath = showFileOptions ? parentDir : absolutePath;
+        // Safety net: the prompt omits non-grantable directory options, but
+        // keep the guard in case a result arrives through another path.
         if (isGrantTooBroad(dirPath)) {
           ctx.ui.notify(
             `Cannot grant access to ${normalizeForDisplay(dirPath, ctx.cwd)}/ — too broad. Treating as allow once.`,
@@ -172,7 +205,9 @@ export default async function pathAccess(pi: ExtensionAPI) {
         const grant = createPendingGrant(
           dirPath,
           true,
-          result === "allow-dir-session" ? "memory" : "local",
+          result === "allow-dir-session"
+            ? "memory"
+            : config.pathAccess.alwaysScope,
         );
         acceptedGrants.push(grant);
         await persistGrant(grant);

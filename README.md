@@ -41,6 +41,10 @@ The `guardrails` extension owns file protection policies and the user-facing com
 
 Use it to protect files like `.env`, private keys, local credentials, generated logs, database dumps, or any project-specific path you do not want Pi to read or modify without clear intent.
 
+Policy rules respect the working directory by default (`respectCwd: true`): a location-anchored pattern (`~`- or `/`-prefixed glob such as `~/work/**`) that happens to contain the session's cwd does not neuter the workspace. Name-based patterns (`.env`), relative path globs, and regex patterns still apply inside the cwd, so secrets stay protected. Set `respectCwd: false` on a rule to enforce anchored patterns everywhere.
+
+Anchored patterns are matched against every equivalent spelling of a target (cwd-relative, `~/…`, and absolute), so a `~/…`-anchored rule holds no matter where the session starts or how the tool input spelled the path.
+
 [![Guardrails policies and settings walkthrough](https://assets.aliou.me/github/aliou/pi-guardrails/v0.12.0/policies.gif)](https://assets.aliou.me/github/aliou/pi-guardrails/v0.12.0/policies.mp4)
 
 Useful commands:
@@ -63,6 +67,10 @@ The `path-access` extension checks tool calls that target paths outside the curr
 
 It can allow, block, or ask before Pi accesses files elsewhere on your machine. In ask mode, you can allow one file or a directory once, for the session, or always.
 
+Which operations are gated is controlled by `pathAccess.applyTo`: `"all"` (default) gates reads and writes outside the workspace, `"write"` gates writes only so read-only tools (`read`, `grep`, `find`, `ls`) can access skill and config files outside the project without a prompt. Bash commands are still gated: a command can write. Configurable through `/guardrails:settings` (Path Access → Applies to).
+
+Where "always" grants are saved is controlled by `pathAccess.alwaysScope`: `"local"` (default) writes them to the project config (`{project}/.pi/extensions/guardrails.json`), `"global"` writes them to the user-wide config (`~/.pi/agent/extensions/guardrails.json`) so they apply in every project. Session grants stay in memory and "once" grants are not persisted, regardless of this setting. Configurable through `/guardrails:settings` (Path Access → Always-grant scope).
+
 Granted paths are stored in `pathAccess.allowedPaths` as explicit `{ kind, path }` entries: `file` matches the exact path, `directory` matches the directory and its descendants. Edit them through `/guardrails:settings` (Path Access → Allowed paths, Tab toggles file/directory) or directly in the settings file. Paths support `~/` for home. Existing configs using the legacy string form (trailing `/` for directories) are migrated automatically.
 
 [![Guardrails path access prompt walkthrough](https://assets.aliou.me/github/aliou/pi-guardrails/v0.12.0/path-access.gif)](https://assets.aliou.me/github/aliou/pi-guardrails/v0.12.0/path-access.mp4)
@@ -74,6 +82,12 @@ The `permission-gate` extension detects dangerous bash commands before they run.
 It catches built-in risky patterns like recursive deletes, privileged commands, disk formatting, broad permission changes, and configured custom patterns. You can allow once, allow for the session, deny, decline and stop (which also aborts the current turn), or configure auto-deny rules.
 
 [![Guardrails permission gate walkthrough](https://assets.aliou.me/github/aliou/pi-guardrails/v0.12.0/permission-gate.gif)](https://assets.aliou.me/github/aliou/pi-guardrails/v0.12.0/permission-gate.mp4)
+
+### Shell substitution checks
+
+Built-in dangerous-command checks, file policies, and path-access extraction inspect commands inside command substitutions (`$(...)` and backticks) and process substitutions (`<(...)` and `>(...)`), including nested substitutions and expanded redirect targets. For example, `echo "$(cat .env)"` exposes the inner file access, while `echo "$(echo .env)"` still treats `.env` as text.
+
+These checks inspect executable nodes provided by the shell parser; they do not evaluate expansions or reparse literal text. Single-quoted text and heredoc delimiters are not executable substitutions. The current parser leaves some constructs as raw text — heredoc bodies (note an *unquoted* heredoc body executes `$(...)` in bash), expansion operands such as `${value:-$(...)}`, and extglob patterns such as `@($(cmd))` — so substitutions in those locations remain outside this traversal.
 
 ## Extension events
 

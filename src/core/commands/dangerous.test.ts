@@ -333,6 +333,51 @@ describe("container matcher (docker/podman)", () => {
 });
 
 describe("checkDangerousCommand", () => {
+  describe("executable substitutions", () => {
+    const patterns = [
+      { pattern: "rm -rf", description: "recursive force delete" },
+    ];
+
+    it.each([
+      'echo "$(rm -rf ./scratch)"',
+      "echo `rm -rf ./scratch`",
+      "cat <(rm -rf ./scratch)",
+      "echo ok > >(rm -rf ./scratch)",
+      'echo "$(echo "$(rm -rf ./scratch)")"',
+      'echo ok <<< "$(rm -rf ./scratch)"',
+      "value=$(rm -rf ./scratch)",
+      "export value=$(rm -rf ./scratch)",
+    ])("matches the inner command structurally in %j", (command) => {
+      expect(
+        checkDangerousCommand({
+          command,
+          patterns: compileCommandPatterns(patterns),
+          useBuiltinMatchers: true,
+          fallbackPatterns: patterns,
+        }),
+      ).toEqual({
+        description: "recursive force delete",
+        pattern: "(structural)",
+      });
+    });
+
+    it.each([
+      "echo '$(rm -rf ./scratch)'",
+      "echo '`rm -rf ./scratch`'",
+      "cat <<'EOF'\n$(rm -rf ./scratch)\nEOF\n",
+      "cat <<$(rm -rf ./scratch)\nbody\n$(rm -rf ./scratch)\n",
+    ])("does not interpret literal text as a command in %j", (command) => {
+      expect(
+        checkDangerousCommand({
+          command,
+          patterns: compileCommandPatterns(patterns),
+          useBuiltinMatchers: true,
+          fallbackPatterns: patterns,
+        }),
+      ).toBeUndefined();
+    });
+  });
+
   it("matches built-in dangerous commands structurally", () => {
     const result = checkDangerousCommand({
       command: "rm -rf /tmp/example",
@@ -428,6 +473,40 @@ describe("checkDangerousCommand", () => {
     expect(result).toEqual({
       description: "recursive force delete",
       pattern: "rm -rf",
+    });
+  });
+
+  it("matches dangerous commands that follow a heredoc", () => {
+    // @aliou/sh 0.2.x folded the statement after a heredoc body into the
+    // heredoc command's words, so `rm -rf …` never surfaced as its own
+    // SimpleCommand and the structural matcher missed it.
+    const result = checkDangerousCommand({
+      command: "cat <<EOF\nbody\nEOF\nrm -rf /tmp/example\n",
+      patterns: [],
+      useBuiltinMatchers: true,
+      fallbackPatterns: [],
+    });
+
+    expect(result).toEqual({
+      description: "recursive force delete",
+      pattern: "(structural)",
+    });
+  });
+
+  it.each([
+    ["multiple heredocs", "cat <<A <<B\nfoo\nA\nbar\nB\nrm -rf /tmp/x\n"],
+    ["heredoc before a pipe", "cat <<EOF | wc -l\nbody\nEOF\nrm -rf /tmp/x\n"],
+  ])("matches dangerous commands after %s", (_label, command) => {
+    const result = checkDangerousCommand({
+      command,
+      patterns: [],
+      useBuiltinMatchers: true,
+      fallbackPatterns: [],
+    });
+
+    expect(result).toEqual({
+      description: "recursive force delete",
+      pattern: "(structural)",
     });
   });
 

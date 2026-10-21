@@ -1,6 +1,6 @@
 {
   "name": "@aliou/pi-guardrails",
-  "version": "0.17.0",
+  "version": "0.19.0",
   "license": "MIT",
   "type": "module",
   "private": false,
@@ -38,7 +38,7 @@
   ],
   "dependencies": {
     "@aliou/pi-utils-settings": "^0.19.1",
-    "@aliou/sh": "^0.2.2"
+    "@aliou/sh": "^0.3.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -61,8 +61,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "gen:schema": "pi-settings-schema -p src/shared/config/types.ts -t GuardrailsConfig -o schema.json --version 0.16.2",
-    "check:schema": "pi-settings-schema -p src/shared/config/types.ts -t GuardrailsConfig -o schema.json --version 0.16.2 --check",
+    "gen:schema": "pi-settings-schema -p src/shared/config/types.ts -t GuardrailsConfig -o schema.json",
+    "check:schema": "pi-settings-schema -p src/shared/config/types.ts -t GuardrailsConfig -o schema.json --check",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "biome check",

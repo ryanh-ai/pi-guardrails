@@ -58,6 +58,12 @@ export interface PolicyRule {
   protection: Protection;
   /** Block only when file exists on disk. Default true. */
   onlyIfExists?: boolean;
+  /**
+   * Skip location-anchored patterns (`~`- or `/`-prefixed globs) for targets
+   * inside the session's cwd. Basename globs, relative path globs, and regex
+   * patterns still apply. Default true.
+   */
+  respectCwd?: boolean;
   /** Message shown when blocked; supports {file} placeholder. */
   blockMessage?: string;
   /** Per-rule toggle. Default true. */
@@ -66,14 +72,35 @@ export interface PolicyRule {
 
 export type PathAccessMode = "allow" | "ask" | "block";
 
+/**
+ * Where "Allow … always" grants from the prompt are persisted.
+ * - `local`: project config (`{project}/.pi/extensions/guardrails.json`).
+ * - `global`: user-wide config (`~/.pi/agent/extensions/guardrails.json`),
+ *   so the same grant applies in every project.
+ */
+export type PathAccessAlwaysScope = "local" | "global";
+
+/**
+ * Which operations the outside-workspace gate applies to.
+ * - `all`: gate every tool call that touches a path outside cwd (default).
+ * - `write`: gate only writes. Read-only tools (`read`, `grep`, `find`, `ls`)
+ *   pass freely, so skill/config files outside the project stay readable.
+ *   Bash commands are still gated: a command can write.
+ */
+export type PathAccessApplyTo = "all" | "write";
+
 export interface PathAccessConfig {
   mode?: PathAccessMode;
+  /** Which operations the gate applies to. Default: "all". */
+  applyTo?: PathAccessApplyTo;
   /**
    * Paths always allowed, regardless of cwd. Each entry carries an explicit
    * `kind`: `file` matches the exact path, `directory` matches the directory
    * and its descendants.
    */
   allowedPaths?: AllowedPath[];
+  /** Config scope used when the user picks "Allow … always" in the prompt. Default: "local". */
+  alwaysScope?: PathAccessAlwaysScope;
 }
 
 export interface GuardrailsConfig {
@@ -140,7 +167,9 @@ export interface ResolvedConfig {
   };
   pathAccess: {
     mode: PathAccessMode;
+    applyTo: PathAccessApplyTo;
     allowedPaths: AllowedPath[];
+    alwaysScope: PathAccessAlwaysScope;
   };
   permissionGate: {
     patterns: DangerousPattern[];

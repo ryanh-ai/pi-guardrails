@@ -2,10 +2,11 @@ import type {
   BashToolCallEvent,
   ExtensionAPI,
   ExtensionContext,
+  LsToolCallEvent,
   ReadToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
 import { createMock, type DeepMocked } from "@golevelup/ts-vitest";
-import { assert, describe, expect, it, vi } from "vitest";
+import { assert, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   GUARDRAILS_PROMPT_CLOSED_EVENT,
   GUARDRAILS_PROMPT_OPENED_EVENT,
@@ -13,6 +14,21 @@ import {
 } from "../../src/shared/events";
 import pathAccess from "./index";
 import type { createPathAccessPromptComponent } from "./prompt";
+import { DIR_OPTIONS, FILE_OPTIONS } from "./prompt";
+import { targetsForTool } from "./targets";
+
+const mockState: {
+  pathAccess: {
+    mode: "allow" | "ask" | "block";
+    applyTo?: "all" | "write";
+    allowedPaths: never[];
+    alwaysScope: "local" | "global";
+  };
+  saves: Array<{ scope: string; config: Record<string, unknown> }>;
+} = {
+  pathAccess: { mode: "ask", allowedPaths: [], alwaysScope: "local" },
+  saves: [],
+};
 
 vi.mock("../../src/shared/config", () => ({
   configLoader: {
@@ -20,8 +36,12 @@ vi.mock("../../src/shared/config", () => ({
     getConfig: vi.fn(() => ({
       enabled: true,
       features: { pathAccess: true },
-      pathAccess: { mode: "ask", allowedPaths: [] },
+      pathAccess: mockState.pathAccess,
     })),
+    getRawConfig: vi.fn(() => null),
+    save: vi.fn(async (scope: string, config: Record<string, unknown>) => {
+      mockState.saves.push({ scope, config });
+    }),
   },
 }));
 
@@ -31,6 +51,9 @@ vi.mock("./dynamic-resources", () => ({
 
 vi.mock("./targets", () => ({
   targetsForTool: vi.fn(async () => ["/outside/secret.txt"]),
+  isReadOnlyTool: vi.fn((toolName: string) =>
+    ["read", "grep", "find", "ls"].includes(toolName),
+  ),
 }));
 
 const toolCall = {
@@ -46,6 +69,13 @@ const bashToolCall = {
   toolName: "bash",
   input: { command: "cat /outside/secret.txt" },
 } satisfies BashToolCallEvent;
+
+const lsToolCall = {
+  type: "tool_call",
+  toolCallId: "test-call",
+  toolName: "ls",
+  input: { path: "/outside/secret.txt" },
+} satisfies LsToolCallEvent;
 
 type PathAccessPromptComponent = ReturnType<
   typeof createPathAccessPromptComponent
@@ -83,6 +113,16 @@ function registeredExtensionHandler(
 }
 
 describe("pathAccess extension hook", () => {
+  beforeEach(() => {
+    mockState.pathAccess = {
+      mode: "ask",
+      applyTo: "all",
+      allowedPaths: [],
+      alwaysScope: "local",
+    };
+    mockState.saves = [];
+  });
+
   it("emits a correlated lifecycle around an outside-path prompt", async () => {
     const pi = createMock<ExtensionAPI>();
     const ctx = createMock<ExtensionContext>({
@@ -133,6 +173,34 @@ describe("pathAccess extension hook", () => {
     );
   });
 
+  it("omits directory grant options when the target directory is not grantable", async () => {
+    vi.mocked(targetsForTool).mockResolvedValue(["/"]);
+    const pi = createMock<ExtensionAPI>();
+    const ctx = createMock<ExtensionContext>({
+      cwd: "/workspace",
+      hasUI: true,
+      mode: "tui",
+    });
+    ctx.ui.custom.mockResolvedValue("allow-dir-once");
+    await pathAccess(pi);
+
+    const toolCallHandler = registeredExtensionHandler(pi, "tool_call");
+    assert(
+      typeof toolCallHandler === "function",
+      "tool_call handler should be registered",
+    );
+    await toolCallHandler(lsToolCall, ctx);
+
+    const promptComponent = ctx.ui.custom.mock.calls[0]?.[0] as
+      | PathAccessPromptComponent
+      | undefined;
+    assert(promptComponent, "path access prompt should be shown");
+    const rendered = renderPromptComponent(promptComponent);
+    expect(rendered).toContain("Allow once");
+    expect(rendered).toContain("Deny");
+    expect(rendered).not.toContain("Allow directory");
+  });
+
   it("shows the bash command in the outside-path prompt", async () => {
     const pi = createMock<ExtensionAPI>();
     const ctx = createMock<ExtensionContext>({
@@ -156,6 +224,351 @@ describe("pathAccess extension hook", () => {
     assert(promptComponent, "path access prompt should be shown");
     expect(renderPromptComponent(promptComponent)).toContain(
       "Command: cat /outside/secret.txt",
+    );
+  });
+
+  it("persists 'allow file always' to the local scope by default", async () => {
+    const pi = createMock<ExtensionAPI>();
+    const ctx = createMock<ExtensionContext>({
+      cwd: "/workspace",
+      hasUI: true,
+      mode: "tui",
+    });
+    ctx.ui.custom.mockResolvedValue("allow-file-always");
+    await pathAccess(pi);
+
+    const toolCallHandler = registeredExtensionHandler(pi, "tool_call");
+    assert(
+      typeof toolCallHandler === "function",
+      "tool_call handler should be registered",
+    );
+    await toolCallHandler(toolCall, ctx);
+
+    expect(mockState.saves).toHaveLength(1);
+    expect(mockState.saves[0].scope).toBe("local");
+    const saved = mockState.saves[0].config as {
+      pathAccess: { allowedPaths: unknown[] };
+    };
+    expect(saved.pathAccess.allowedPaths).toEqual([
+      { kind: "file", path: "/outside/secret.txt" },
+    ]);
+  });
+
+  it("persists 'allow file always' to the global scope when alwaysScope is global", async () => {
+    mockState.pathAccess.alwaysScope = "global";
+    const pi = createMock<ExtensionAPI>();
+    const ctx = createMock<ExtensionContext>({
+      cwd: "/workspace",
+      hasUI: true,
+      mode: "tui",
+    });
+    ctx.ui.custom.mockResolvedValue("allow-file-always");
+    await pathAccess(pi);
+
+    const toolCallHandler = registeredExtensionHandler(pi, "tool_call");
+    assert(
+      typeof toolCallHandler === "function",
+      "tool_call handler should be registered",
+    );
+    await toolCallHandler(toolCall, ctx);
+
+    expect(mockState.saves).toHaveLength(1);
+    expect(mockState.saves[0].scope).toBe("global");
+    const saved = mockState.saves[0].config as {
+      pathAccess: { allowedPaths: unknown[] };
+    };
+    expect(saved.pathAccess.allowedPaths).toEqual([
+      { kind: "file", path: "/outside/secret.txt" },
+    ]);
+  });
+
+  it("persists 'allow directory always' to the global scope when alwaysScope is global", async () => {
+    mockState.pathAccess.alwaysScope = "global";
+    const pi = createMock<ExtensionAPI>();
+    const ctx = createMock<ExtensionContext>({
+      cwd: "/workspace",
+      hasUI: true,
+      mode: "tui",
+    });
+    ctx.ui.custom.mockResolvedValue("allow-dir-always");
+    await pathAccess(pi);
+
+    const toolCallHandler = registeredExtensionHandler(pi, "tool_call");
+    assert(
+      typeof toolCallHandler === "function",
+      "tool_call handler should be registered",
+    );
+    await toolCallHandler(toolCall, ctx);
+
+    expect(mockState.saves).toHaveLength(1);
+    expect(mockState.saves[0].scope).toBe("global");
+    const saved = mockState.saves[0].config as {
+      pathAccess: { allowedPaths: unknown[] };
+    };
+    expect(saved.pathAccess.allowedPaths).toEqual([
+      { kind: "directory", path: "/outside" },
+    ]);
+  });
+
+  it("persists session grants to memory regardless of alwaysScope", async () => {
+    mockState.pathAccess.alwaysScope = "global";
+    const pi = createMock<ExtensionAPI>();
+    const ctx = createMock<ExtensionContext>({
+      cwd: "/workspace",
+      hasUI: true,
+      mode: "tui",
+    });
+    ctx.ui.custom.mockResolvedValue("allow-file-session");
+    await pathAccess(pi);
+
+    const toolCallHandler = registeredExtensionHandler(pi, "tool_call");
+    assert(
+      typeof toolCallHandler === "function",
+      "tool_call handler should be registered",
+    );
+    await toolCallHandler(toolCall, ctx);
+
+    expect(mockState.saves).toHaveLength(1);
+    expect(mockState.saves[0].scope).toBe("memory");
+  });
+
+  it("does not persist 'allow once' grants", async () => {
+    mockState.pathAccess.alwaysScope = "global";
+    const pi = createMock<ExtensionAPI>();
+    const ctx = createMock<ExtensionContext>({
+      cwd: "/workspace",
+      hasUI: true,
+      mode: "tui",
+    });
+    ctx.ui.custom.mockResolvedValue("allow-file-once");
+    await pathAccess(pi);
+
+    const toolCallHandler = registeredExtensionHandler(pi, "tool_call");
+    assert(
+      typeof toolCallHandler === "function",
+      "tool_call handler should be registered",
+    );
+    await toolCallHandler(toolCall, ctx);
+
+    expect(mockState.saves).toHaveLength(0);
+  });
+});
+
+describe("pathAccess extension hook write-only applyTo", () => {
+  beforeEach(() => {
+    mockState.pathAccess = {
+      mode: "ask",
+      applyTo: "write",
+      allowedPaths: [],
+      alwaysScope: "local",
+    };
+    mockState.saves = [];
+  });
+
+  function setup() {
+    const pi = createMock<ExtensionAPI>();
+    const ctx = createMock<ExtensionContext>({
+      cwd: "/workspace",
+      hasUI: true,
+      mode: "tui",
+    });
+    return { pi, ctx };
+  }
+
+  it("lets read-only tools pass without a prompt", async () => {
+    const { pi, ctx } = setup();
+    await pathAccess(pi);
+
+    const toolCallHandler = registeredExtensionHandler(pi, "tool_call");
+    assert(
+      typeof toolCallHandler === "function",
+      "tool_call handler should be registered",
+    );
+    await expect(toolCallHandler(toolCall, ctx)).resolves.toBeUndefined();
+
+    expect(ctx.ui.custom).not.toHaveBeenCalled();
+    expect(pi.events.emit).not.toHaveBeenCalled();
+  });
+
+  it("still gates write tools", async () => {
+    const { pi, ctx } = setup();
+    ctx.ui.custom.mockResolvedValue("allow-file-once");
+    await pathAccess(pi);
+
+    const toolCallHandler = registeredExtensionHandler(pi, "tool_call");
+    assert(
+      typeof toolCallHandler === "function",
+      "tool_call handler should be registered",
+    );
+    await toolCallHandler(bashToolCall, ctx);
+
+    expect(ctx.ui.custom).toHaveBeenCalledTimes(1);
+  });
+
+  it("gates read-only tools again once applyTo is 'all'", async () => {
+    mockState.pathAccess.applyTo = "all";
+    const { pi, ctx } = setup();
+    ctx.ui.custom.mockResolvedValue("allow-file-once");
+    await pathAccess(pi);
+
+    const toolCallHandler = registeredExtensionHandler(pi, "tool_call");
+    assert(
+      typeof toolCallHandler === "function",
+      "tool_call handler should be registered",
+    );
+    await toolCallHandler(toolCall, ctx);
+
+    expect(ctx.ui.custom).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("pathAccess extension hook RPC fallback", () => {
+  beforeEach(() => {
+    mockState.pathAccess = {
+      mode: "ask",
+      applyTo: "all",
+      allowedPaths: [],
+      alwaysScope: "local",
+    };
+    mockState.saves = [];
+  });
+
+  function setup() {
+    const pi = createMock<ExtensionAPI>();
+    const ctx = createMock<ExtensionContext>({
+      cwd: "/workspace",
+      hasUI: true,
+      mode: "rpc",
+    });
+    ctx.ui.custom.mockResolvedValue(undefined);
+    return { pi, ctx };
+  }
+
+  async function runHandler(
+    pi: DeepMocked<ExtensionAPI>,
+    ctx: DeepMocked<ExtensionContext>,
+    event: unknown,
+  ) {
+    await pathAccess(pi);
+    const toolCallHandler = registeredExtensionHandler(pi, "tool_call");
+    assert(
+      typeof toolCallHandler === "function",
+      "tool_call handler should be registered",
+    );
+    return toolCallHandler(event as never, ctx);
+  }
+
+  it("falls back to ui.select with file options for file tools", async () => {
+    const { pi, ctx } = setup();
+    ctx.ui.select.mockResolvedValue("Allow once");
+
+    await runHandler(pi, ctx, toolCall);
+
+    expect(ctx.ui.select).toHaveBeenCalledTimes(1);
+    const [title, options] = ctx.ui.select.mock.calls[0] as [string, string[]];
+    expect(title).toContain("/outside/secret.txt");
+    expect(title).toContain("outside /workspace");
+    expect(title).toContain("Directory grants apply to the parent directory");
+    expect(options).toEqual(FILE_OPTIONS.map((option) => option.label));
+  });
+
+  it("falls back to ui.select with directory-only options for ls", async () => {
+    const { pi, ctx } = setup();
+    ctx.ui.select.mockResolvedValue("Allow directory this session");
+
+    await runHandler(pi, ctx, lsToolCall);
+
+    expect(ctx.ui.select).toHaveBeenCalledTimes(1);
+    const [title, options] = ctx.ui.select.mock.calls[0] as [string, string[]];
+    expect(title).toContain("/outside/secret.txt");
+    expect(title).not.toContain(
+      "Directory grants apply to the parent directory",
+    );
+    expect(options).toEqual(DIR_OPTIONS.map((option) => option.label));
+  });
+
+  it.each([
+    { label: "Allow once", saves: 0, blocked: false },
+    { label: "Deny", saves: 0, blocked: true },
+    { label: undefined, saves: 0, blocked: true },
+  ])("maps selection %j to the expected result", async ({
+    label,
+    saves,
+    blocked,
+  }) => {
+    const { pi, ctx } = setup();
+    ctx.ui.select.mockResolvedValue(label);
+
+    const result = await runHandler(pi, ctx, toolCall);
+
+    if (blocked) {
+      expect(result).toEqual({
+        block: true,
+        reason: "User denied access outside working directory",
+      });
+    } else {
+      expect(result).toBeUndefined();
+    }
+    expect(mockState.saves).toHaveLength(saves);
+  });
+
+  it("maps 'Allow directory always' to a parent-directory grant", async () => {
+    const { pi, ctx } = setup();
+    ctx.ui.select.mockResolvedValue("Allow directory always");
+
+    const result = await runHandler(pi, ctx, toolCall);
+
+    expect(result).toBeUndefined();
+    expect(mockState.saves).toHaveLength(1);
+    expect(mockState.saves[0].scope).toBe("local");
+    const saved = mockState.saves[0].config as {
+      pathAccess: { allowedPaths: unknown[] };
+    };
+    expect(saved.pathAccess.allowedPaths).toEqual([
+      { kind: "directory", path: "/outside" },
+    ]);
+  });
+
+  it("persists fallback always grants to the configured scope", async () => {
+    mockState.pathAccess.alwaysScope = "global";
+    const { pi, ctx } = setup();
+    ctx.ui.select.mockResolvedValue("Allow file always");
+
+    await runHandler(pi, ctx, toolCall);
+
+    expect(mockState.saves).toHaveLength(1);
+    expect(mockState.saves[0].scope).toBe("global");
+    const saved = mockState.saves[0].config as {
+      pathAccess: { allowedPaths: unknown[] };
+    };
+    expect(saved.pathAccess.allowedPaths).toEqual([
+      { kind: "file", path: "/outside/secret.txt" },
+    ]);
+  });
+
+  it("omits directory grant options for an ungrantable directory target", async () => {
+    vi.mocked(targetsForTool).mockResolvedValue(["/"]);
+    const { pi, ctx } = setup();
+    ctx.ui.select.mockResolvedValue("Allow once");
+
+    await runHandler(pi, ctx, lsToolCall);
+
+    expect(ctx.ui.select).toHaveBeenCalledTimes(1);
+    const [, options] = ctx.ui.select.mock.calls[0] as [string, string[]];
+    expect(options).toEqual(["Allow once", "Deny"]);
+  });
+
+  it("still emits the prompt lifecycle around the fallback", async () => {
+    const { pi, ctx } = setup();
+    ctx.ui.select.mockResolvedValue("Deny");
+
+    await runHandler(pi, ctx, toolCall);
+
+    const opened = emittedPromptOpened(pi);
+    assert(opened, "prompt opened event should be emitted");
+    expect(pi).toHaveEmitted(
+      GUARDRAILS_PROMPT_CLOSED_EVENT,
+      expect.objectContaining({ prompt: { id: opened.prompt.id } }),
     );
   });
 });
