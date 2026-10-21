@@ -65,6 +65,43 @@ describe("targetsForTool", () => {
       targetsForTool("custom", { path: "README.md" }, "/repo"),
     ).resolves.toEqual([]);
   });
+
+  it("extracts interactive_shell command paths", async () => {
+    vol.fromJSON({ "/outside/notes.txt": "hi" });
+
+    await expect(
+      targetsForTool(
+        "interactive_shell",
+        { command: "less /outside/notes.txt" },
+        "/repo",
+      ),
+    ).resolves.toEqual(["/outside/notes.txt"]);
+  });
+
+  it("treats an explicit interactive_shell cwd as a target", async () => {
+    vol.fromJSON({ "/outside/notes.txt": "hi" });
+
+    await expect(
+      targetsForTool(
+        "interactive_shell",
+        { command: "less ./notes.txt", cwd: "/outside" },
+        "/repo",
+      ),
+    ).resolves.toEqual(["/outside", "/outside/notes.txt"]);
+  });
+
+  it("ignores interactive_shell spawn launches", async () => {
+    await expect(
+      targetsForTool(
+        "interactive_shell",
+        {
+          spawn: { agent: "pi", prompt: "less /outside/notes.txt" },
+          cwd: "/outside",
+        },
+        "/repo",
+      ),
+    ).resolves.toEqual([]);
+  });
 });
 
 describe("isReadOnlyTool", () => {

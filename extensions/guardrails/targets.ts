@@ -1,5 +1,5 @@
 import { parse } from "@aliou/sh";
-import { maybePathLike } from "../../src/core/paths";
+import { maybePathLike, resolveFromCwd } from "../../src/core/paths";
 import {
   isFdDuplicationRedirect,
   isHeredocRedirect,
@@ -9,6 +9,7 @@ import {
   wordToString,
 } from "../../src/core/shell";
 import { expandGlob, hasGlobChars } from "../../src/shared/glob";
+import { shellCommandForTool } from "../../src/shared/shell-tools";
 import type { CompiledPolicy } from "./rules";
 import { candidateTargetForms, normalizeTarget } from "./rules";
 
@@ -43,11 +44,19 @@ export async function extractTargets(
     return target ? [{ path: target, unresolved: false }] : [];
   }
 
-  if (event.toolName !== "bash") return [];
-  const command = String(event.input.command ?? "");
+  const invocation = shellCommandForTool(event.toolName, event.input, cwd);
+  if (!invocation) return [];
+  const { command } = invocation;
+  // interactive_shell can run in another directory. Anchor resolved relative
+  // paths there so policies match the file the command will actually touch.
+  const anchor = (candidate: string, unresolved: boolean) =>
+    invocation.cwd === cwd || unresolved
+      ? candidate
+      : resolveFromCwd(candidate, invocation.cwd);
   const targets = new Map<string, boolean>();
-  const maybeAdd = async (candidate: string, unresolved: boolean) => {
-    if (!candidate || candidate.startsWith("-")) return;
+  const maybeAdd = async (rawCandidate: string, unresolved: boolean) => {
+    if (!rawCandidate || rawCandidate.startsWith("-")) return;
+    const candidate = anchor(rawCandidate, unresolved);
     for (const file of await expandCandidate(candidate)) {
       const forms = unresolved
         ? [normalizeTarget(file, cwd)]
