@@ -18,6 +18,7 @@ import {
   GUARDRAILS_PROMPT_OPENED_EVENT,
   setupLegacyPromptEventAlias,
 } from "../../src/shared/events";
+import { shellCommandForTool } from "../../src/shared/shell-tools";
 import { piDocumentationPaths } from "./dynamic-resources";
 import {
   createPendingGrant,
@@ -70,8 +71,11 @@ export default async function pathAccess(pi: ExtensionAPI) {
     }
 
     const input = event.input as Record<string, unknown>;
-    const bashCommand =
-      event.toolName === "bash" ? String(input.command ?? "") : undefined;
+    const bashCommand = shellCommandForTool(
+      event.toolName,
+      input,
+      ctx.cwd,
+    )?.command;
     const targets = [
       ...new Set(await targetsForTool(event.toolName, input, ctx.cwd)),
     ];

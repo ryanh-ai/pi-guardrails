@@ -59,7 +59,9 @@ The adapter has no configuration or direct Herdr dependency. Its emitted events 
 
 ### path-access
 
-The `path-access` extension checks tool calls that target paths outside the current working directory.
+The `path-access` extension checks tool calls that target paths outside the current working directory. For `interactive_shell` raw command launches, an explicit `cwd` outside the working directory counts as a target too.
+
+File protection policies (`guardrails`) apply to `interactive_shell` raw commands the same way they apply to `bash`.
 
 It can allow, block, or ask before Pi accesses files elsewhere on your machine. In ask mode, you can allow one file or a directory once, for the session, or always.
 
@@ -69,7 +71,7 @@ Granted paths are stored in `pathAccess.allowedPaths` as explicit `{ kind, path 
 
 ### permission-gate
 
-The `permission-gate` extension detects dangerous bash commands before they run.
+The `permission-gate` extension detects dangerous bash commands before they run. It also checks raw `command` launches from [pi-interactive-shell](https://github.com/nicobailon/pi-interactive-shell)'s `interactive_shell` tool (structured `spawn` launches and input sent to existing sessions are not checked).
 
 It catches built-in risky patterns like recursive deletes, privileged commands, disk formatting, broad permission changes, and configured custom patterns. You can allow once, allow for the session, deny, decline and stop (which also aborts the current turn), or configure auto-deny rules.
 

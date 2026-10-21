@@ -113,4 +113,54 @@ describe("extractTargets", () => {
       ),
     ).resolves.toEqual([{ path: ".env", unresolved: false }]);
   });
+
+  const secretPolicies = () =>
+    compilePolicies([
+      {
+        id: "secret-files",
+        name: "Secret Files",
+        patterns: [{ pattern: ".env" }],
+        protection: "noAccess",
+      },
+    ]);
+
+  it("extracts interactive_shell command targets", async () => {
+    vol.fromJSON({ "/repo/.env": "TOKEN=secret" });
+
+    await expect(
+      extractTargets(
+        { toolName: "interactive_shell", input: { command: "less .env" } },
+        "/repo",
+        secretPolicies(),
+      ),
+    ).resolves.toEqual([{ path: ".env", unresolved: false }]);
+  });
+
+  it("anchors interactive_shell targets at its explicit cwd", async () => {
+    vol.fromJSON({ "/other/.env": "TOKEN=secret" });
+
+    await expect(
+      extractTargets(
+        {
+          toolName: "interactive_shell",
+          input: { command: "less .env", cwd: "/other" },
+        },
+        "/repo",
+        secretPolicies(),
+      ),
+    ).resolves.toEqual([{ path: "/other/.env", unresolved: false }]);
+  });
+
+  it("ignores interactive_shell spawn launches", async () => {
+    await expect(
+      extractTargets(
+        {
+          toolName: "interactive_shell",
+          input: { spawn: { agent: "pi", prompt: "less .env" } },
+        },
+        "/repo",
+        secretPolicies(),
+      ),
+    ).resolves.toEqual([]);
+  });
 });
