@@ -41,6 +41,8 @@ The `guardrails` extension owns file protection policies and the user-facing com
 
 Use it to protect files like `.env`, private keys, local credentials, generated logs, database dumps, or any project-specific path you do not want Pi to read or modify without clear intent.
 
+Policies apply to `bash` commands and to raw `command` launches from pi-interactive-shell's `interactive_shell` tool.
+
 Policy rules respect the working directory by default (`respectCwd: true`): a location-anchored pattern (`~`- or `/`-prefixed glob such as `~/work/**`) that happens to contain the session's cwd does not neuter the workspace. Name-based patterns (`.env`), relative path globs, and regex patterns still apply inside the cwd, so secrets stay protected. Set `respectCwd: false` on a rule to enforce anchored patterns everywhere.
 
 Anchored patterns are matched against every equivalent spelling of a target (cwd-relative, `~/…`, and absolute), so a `~/…`-anchored rule holds no matter where the session starts or how the tool input spelled the path.
@@ -63,11 +65,11 @@ The adapter has no configuration or direct Herdr dependency. Its emitted events 
 
 ### path-access
 
-The `path-access` extension checks tool calls that target paths outside the current working directory.
+The `path-access` extension checks tool calls that target paths outside the current working directory. For `interactive_shell` raw command launches, an explicit `cwd` outside the working directory counts as a target too.
 
 It can allow, block, or ask before Pi accesses files elsewhere on your machine. In ask mode, you can allow one file or a directory once, for the session, or always.
 
-Which operations are gated is controlled by `pathAccess.applyTo`: `"all"` (default) gates reads and writes outside the workspace, `"write"` gates writes only so read-only tools (`read`, `grep`, `find`, `ls`) can access skill and config files outside the project without a prompt. Bash commands are still gated: a command can write. Configurable through `/guardrails:settings` (Path Access → Applies to).
+Which operations are gated is controlled by `pathAccess.applyTo`: `"all"` (default) gates reads and writes outside the workspace, `"write"` gates writes only so read-only tools (`read`, `grep`, `find`, `ls`) can access skill and config files outside the project without a prompt. Bash and `interactive_shell` commands are still gated: a command can write. Configurable through `/guardrails:settings` (Path Access → Applies to).
 
 Where "always" grants are saved is controlled by `pathAccess.alwaysScope`: `"local"` (default) writes them to the project config (`{project}/.pi/extensions/guardrails.json`), `"global"` writes them to the user-wide config (`~/.pi/agent/extensions/guardrails.json`) so they apply in every project. Session grants stay in memory and "once" grants are not persisted, regardless of this setting. Configurable through `/guardrails:settings` (Path Access → Always-grant scope).
 
@@ -77,7 +79,7 @@ Granted paths are stored in `pathAccess.allowedPaths` as explicit `{ kind, path 
 
 ### permission-gate
 
-The `permission-gate` extension detects dangerous bash commands before they run.
+The `permission-gate` extension detects dangerous bash commands before they run. It also checks raw `command` launches from [pi-interactive-shell](https://github.com/nicobailon/pi-interactive-shell)'s `interactive_shell` tool (structured `spawn` launches and input sent to existing sessions are not checked).
 
 It catches built-in risky patterns like recursive deletes, privileged commands, disk formatting, broad permission changes, and configured custom patterns. You can allow once, allow for the session, deny, decline and stop (which also aborts the current turn), or configure auto-deny rules.
 

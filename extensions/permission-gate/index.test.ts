@@ -390,4 +390,55 @@ describe("permissionGate extension hook", () => {
       }),
     );
   });
+
+  it("gates dangerous interactive_shell raw commands", async () => {
+    assert(toolCallHandler, "tool_call handler should be registered");
+
+    const ctx = createCtx({
+      ui: { custom: vi.fn().mockResolvedValue("deny"), select: vi.fn() },
+    });
+    const result = await toolCallHandler(
+      {
+        type: "tool_call",
+        toolCallId: "shell-call",
+        toolName: "interactive_shell",
+        input: { command: "dangerous-cmd", mode: "dispatch" },
+      } as ToolCallEvent,
+      ctx,
+    );
+
+    expect(result).toEqual({
+      block: true,
+      reason: "User denied dangerous command",
+    });
+    expect(pi.events.emit).toHaveBeenCalledWith(
+      GUARDRAILS_ACTION_BLOCKED_EVENT,
+      expect.objectContaining({
+        action: expect.objectContaining({ origin: "interactive_shell" }),
+        context: expect.objectContaining({ toolName: "interactive_shell" }),
+      }),
+    );
+  });
+
+  it("ignores interactive_shell calls without a raw command", async () => {
+    assert(toolCallHandler, "tool_call handler should be registered");
+
+    const ctx = createCtx();
+    for (const input of [
+      { spawn: { agent: "pi", prompt: "dangerous-cmd" } },
+      { sessionId: "calm-reef", input: "dangerous-cmd" },
+    ]) {
+      const result = await toolCallHandler(
+        {
+          type: "tool_call",
+          toolCallId: "shell-call",
+          toolName: "interactive_shell",
+          input,
+        } as ToolCallEvent,
+        ctx,
+      );
+      expect(result).toBeUndefined();
+    }
+    expect(ctx.ui.custom).not.toHaveBeenCalled();
+  });
 });

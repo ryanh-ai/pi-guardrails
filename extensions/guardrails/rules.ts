@@ -8,6 +8,7 @@ import {
   compileFilePatterns,
   normalizeFilePath,
 } from "../../src/shared/matching";
+import { INTERACTIVE_SHELL_TOOL } from "../../src/shared/shell-tools";
 
 export type PolicyMeta = {
   ruleId: string;
@@ -34,8 +35,17 @@ const DEFAULT_BLOCK_MESSAGES: Record<Protection, string> = {
 };
 
 export const BLOCKED_TOOLS: Record<Protection, Set<string>> = {
-  noAccess: new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]),
-  readOnly: new Set(["write", "edit", "bash"]),
+  noAccess: new Set([
+    "read",
+    "write",
+    "edit",
+    "bash",
+    INTERACTIVE_SHELL_TOOL,
+    "grep",
+    "find",
+    "ls",
+  ]),
+  readOnly: new Set(["write", "edit", "bash", INTERACTIVE_SHELL_TOOL]),
   none: new Set(),
 };
 

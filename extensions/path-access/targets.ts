@@ -1,5 +1,6 @@
 import { resolveFromCwd } from "../../src/core/paths";
 import { extractBashPathCandidates } from "../../src/shared/paths";
+import { shellCommandForTool } from "../../src/shared/shell-tools";
 
 /** Tools that only read. Bash is never read-only: a command can write. */
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
@@ -18,9 +19,16 @@ export async function targetsForTool(
     return raw ? [resolveFromCwd(raw, cwd)] : [];
   }
 
-  if (toolName === "bash") {
-    return extractBashPathCandidates(String(input.command ?? ""), cwd);
-  }
+  const invocation = shellCommandForTool(toolName, input, cwd);
+  if (!invocation) return [];
 
-  return [];
+  const candidates = await extractBashPathCandidates(
+    invocation.command,
+    invocation.cwd,
+  );
+  // An explicit interactive_shell cwd is itself an access target: the command
+  // runs there even if it never names a path.
+  return invocation.hasExplicitCwd
+    ? [invocation.cwd, ...candidates]
+    : candidates;
 }
