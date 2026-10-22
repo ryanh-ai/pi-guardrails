@@ -574,10 +574,19 @@ describe("permissionGate extension hook", () => {
           input: { sessionId: "gate-session", ...input },
         }) as ToolCallEvent;
 
-      // Typed without submitting: allowed and buffered.
+      // Typed without submitting: allowed, and buffered once it has run.
       expect(
         await toolCallHandler(event("type-1", { input: "wipe-" }), ctx),
       ).toBeUndefined();
+      const calls: unknown[][] = pi.on.mock.calls;
+      const onEnd = calls.find(
+        ([name]) => name === "tool_execution_end",
+      )?.[1] as (event: unknown) => void;
+      onEnd({
+        toolCallId: "type-1",
+        toolName: "interactive_shell",
+        isError: false,
+      });
       // Enter submits the buffered line.
       expect(
         await toolCallHandler(

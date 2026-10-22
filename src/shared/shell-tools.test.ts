@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { resetSessionInputState, shellCommandForTool } from "./shell-tools";
+import {
+  resetSessionInputState,
+  settleSessionInput,
+  shellCommandForTool,
+} from "./shell-tools";
 
 describe("shellCommandForTool", () => {
   it("returns bash commands in the session cwd", () => {
@@ -54,13 +58,22 @@ describe("shellCommandForTool session input", () => {
   beforeEach(() => resetSessionInputState());
 
   let counter = 0;
-  const send = (input: Record<string, unknown>, sessionId = "calm-reef") =>
-    shellCommandForTool(
+  /** One tool call that runs (executed) or is blocked. */
+  const send = (
+    input: Record<string, unknown>,
+    sessionId = "calm-reef",
+    executed = true,
+  ) => {
+    const id = `call-${++counter}`;
+    const command = shellCommandForTool(
       "interactive_shell",
       { sessionId, ...input },
       "/repo",
-      `call-${++counter}`,
+      id,
     )?.command;
+    settleSessionInput(id, executed);
+    return command;
+  };
 
   it("returns submitted text", () => {
     expect(send({ input: "wipe build", submit: true })).toBe("wipe build");
@@ -101,7 +114,23 @@ describe("shellCommandForTool session input", () => {
     for (let i = 0; i < 3; i++) {
       shellCommandForTool("interactive_shell", input, "/repo", "same-call");
     }
+    settleSessionInput("same-call", true);
+    settleSessionInput("same-call", true);
     expect(send({ input: "home", submit: true })).toBe("wipe home");
+  });
+
+  it("keeps the typed prefix when the submitting call is blocked", () => {
+    expect(send({ input: "wipe " })).toBeUndefined();
+    // Blocked: nothing was sent, so the terminal line still holds "wipe ".
+    expect(
+      send({ input: "home", inputKeys: ["enter"] }, "calm-reef", false),
+    ).toBe("wipe home");
+    expect(send({ input: "echo ok", submit: true })).toBe("wipe echo ok");
+  });
+
+  it("does not advance the buffer for a blocked unsubmitted call", () => {
+    expect(send({ input: "wipe " }, "calm-reef", false)).toBeUndefined();
+    expect(send({ input: "ls", submit: true })).toBe("ls");
   });
 
   it("peeks without advancing when no tool call id is given", () => {

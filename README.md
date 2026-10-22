@@ -82,7 +82,7 @@ Granted paths are stored in `pathAccess.allowedPaths` as explicit `{ kind, path 
 The `permission-gate` extension detects dangerous bash commands before they run. It also checks [pi-interactive-shell](https://github.com/nicobailon/pi-interactive-shell)'s `interactive_shell` tool:
 
 - Raw `command` launches are checked like `bash`.
-- Text sent to an existing session (`input`, `inputPaste`, `inputHex`, and literal `inputKeys`) is checked once it is submitted by Enter, a newline, or `submit: true`. Unsubmitted text is buffered per session and checked together with the text that submits it, after basic line editing (Backspace, Ctrl+C, Ctrl+U, Ctrl+W). This applies to every session, so text typed to an agent TUI can also prompt.
+- Text sent to an existing session (`input`, `inputPaste`, `inputHex`, and literal `inputKeys`) is checked once it is submitted by Enter, a newline, or `submit: true`. Unsubmitted text is buffered per session and checked together with the text that submits it, after basic line editing (Backspace, Ctrl+C, Ctrl+U, Ctrl+W). The buffer only advances when a call actually runs, so after a blocked submission the typed prefix still counts toward the next one. This applies to every session, so text typed to an agent TUI can also prompt.
 - Structured `spawn` launches are not checked. Neither are lines recalled from shell history or completed with Tab, since their text never appears in the tool input.
 
 Rules are evaluated in this order:

@@ -15,7 +15,10 @@ import {
   GUARDRAILS_PROMPT_OPENED_EVENT,
   setupLegacyPromptEventAlias,
 } from "../../src/shared/events";
-import { shellCommandForTool } from "../../src/shared/shell-tools";
+import {
+  shellCommandForTool,
+  trackSessionInput,
+} from "../../src/shared/shell-tools";
 import {
   isCommandAllowed,
   type PersistentPermissionGateScope,
@@ -130,6 +133,7 @@ export default async function permissionGate(pi: ExtensionAPI) {
   });
   setupLegacyPromptEventAlias(pi, "permissionGate");
 
+  trackSessionInput(pi);
   pi.on("tool_call", async (event, ctx) => {
     const config = configLoader.getConfig();
     if (!config.enabled || !config.features.permissionGate) return;

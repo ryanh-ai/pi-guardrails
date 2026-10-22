@@ -18,7 +18,10 @@ import {
   GUARDRAILS_PROMPT_OPENED_EVENT,
   setupLegacyPromptEventAlias,
 } from "../../src/shared/events";
-import { shellCommandForTool } from "../../src/shared/shell-tools";
+import {
+  shellCommandForTool,
+  trackSessionInput,
+} from "../../src/shared/shell-tools";
 import { piDocumentationPaths } from "./dynamic-resources";
 import {
   createPendingGrant,
@@ -64,6 +67,7 @@ export default async function pathAccess(pi: ExtensionAPI) {
   });
   setupLegacyPromptEventAlias(pi, "pathAccess");
 
+  trackSessionInput(pi);
   pi.on("tool_call", async (event, ctx) => {
     const config = configLoader.getConfig();
     if (

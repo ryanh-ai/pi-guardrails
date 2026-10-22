@@ -1,3 +1,4 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveFromCwd } from "../core/paths/path";
 
 /**
@@ -36,8 +37,9 @@ export interface ShellCommandInvocation {
  *     together with the text that submits it.
  *   - structured `spawn` launches and session queries return undefined.
  *
- * Pass the tool call id so the per-session buffer advances exactly once per
- * call even though several guardrails features inspect the same call.
+ * Pass the tool call id so every guardrails feature sees the same result for
+ * a call. The session buffer only advances once the call actually ran: see
+ * `trackSessionInput`.
  */
 export function shellCommandForTool(
   toolName: string,
@@ -76,16 +78,57 @@ export function shellCommandForTool(
 
 // --- Session input -----------------------------------------------------------
 
-/** Unsubmitted line text per interactive_shell session. */
+/** Unsubmitted line text per interactive_shell session, as last sent. */
 const pendingLines = new Map<string, string>();
 /** Results already computed for a tool call (bounded). */
 const callResults = new Map<string, string | undefined>();
-const MAX_CALL_RESULTS = 256;
+/** Buffer state each call would leave behind, applied only if it runs. */
+const stagedLines = new Map<string, { sessionId: string; pending: string }>();
+const MAX_TRACKED_CALLS = 256;
+
+function remember<T>(map: Map<string, T>, key: string, value: T): void {
+  map.set(key, value);
+  if (map.size > MAX_TRACKED_CALLS) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+}
 
 /** Test hook. */
 export function resetSessionInputState(): void {
   pendingLines.clear();
   callResults.clear();
+  stagedLines.clear();
+}
+
+/**
+ * Apply or drop the buffer update staged for a tool call. A blocked or
+ * failed call sent nothing, so the terminal still holds the previous
+ * unsubmitted text; keeping it means the next submission is checked
+ * together with that prefix. Idempotent per call id.
+ */
+export function settleSessionInput(
+  toolCallId: string,
+  executed: boolean,
+): void {
+  const staged = stagedLines.get(toolCallId);
+  if (!staged) return;
+  stagedLines.delete(toolCallId);
+  if (!executed) return;
+  if (staged.pending) pendingLines.set(staged.sessionId, staged.pending);
+  else pendingLines.delete(staged.sessionId);
+}
+
+/**
+ * Advance session buffers when tool calls finish. Every extension that calls
+ * `shellCommandForTool` registers this; settling is idempotent, so it is
+ * safe whether or not the extensions share this module instance.
+ */
+export function trackSessionInput(pi: ExtensionAPI): void {
+  pi.on("tool_execution_end", (event) => {
+    if (event.toolName !== INTERACTIVE_SHELL_TOOL) return;
+    settleSessionInput(event.toolCallId, !event.isError);
+  });
 }
 
 const IGNORED_KEYS = new Set([
@@ -237,15 +280,11 @@ function submittedSessionText(
     ? lines.join("\n")
     : undefined;
 
-  // Without a call id, peek only: don't advance the session buffer.
+  // Without a call id, peek only. With one, stage the new buffer state until
+  // the call is known to have run.
   if (toolCallId) {
-    if (pending) pendingLines.set(sessionId, pending);
-    else pendingLines.delete(sessionId);
-    callResults.set(toolCallId, submitted);
-    if (callResults.size > MAX_CALL_RESULTS) {
-      const oldest = callResults.keys().next().value;
-      if (oldest !== undefined) callResults.delete(oldest);
-    }
+    remember(callResults, toolCallId, submitted);
+    remember(stagedLines, toolCallId, { sessionId, pending });
   }
   return submitted;
 }

@@ -9,6 +9,7 @@ import {
   type GuardrailsFeatureId,
   type GuardrailsFeatureRegisterPayload,
 } from "../../src/shared/events";
+import { trackSessionInput } from "../../src/shared/shell-tools";
 import { registerGuardrailsExamplesCommand } from "./commands/examples";
 import { registerGuardrailsOnboardingCommand } from "./commands/onboarding";
 import { isOnboardingPending } from "./commands/onboarding/config";
@@ -123,6 +124,7 @@ export default async function guardrails(pi: ExtensionAPI) {
     registerGuardrailsOnboardingCommand(pi);
   }
   setupPolicyHook(pi);
+  trackSessionInput(pi);
 
   pi.on("session_start", (_event, ctx) => {
     loadedFeatures.clear();
