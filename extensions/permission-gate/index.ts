@@ -20,6 +20,7 @@ import {
   trackSessionInput,
 } from "../../src/shared/shell-tools";
 import {
+  exactCommandPattern,
   isCommandAllowed,
   type PersistentPermissionGateScope,
   saveCommandPersistentGrant,
@@ -76,7 +77,11 @@ function createScopedGrantPattern(
   choice: Exclude<ScopedGrantChoice, "cancel">,
   configuredPatterns: PatternConfig[],
 ): PatternConfig {
-  if (choice === "exact") return { pattern: command };
+  // Anchored, like session grants: a plain substring grant for `git status`
+  // would also skip the prompt for `git status; <anything>`.
+  if (choice === "exact") {
+    return { pattern: exactCommandPattern(command), regex: true };
+  }
 
   const configured = configuredPatterns.find(
     (pattern) => pattern.pattern === matchedPattern,

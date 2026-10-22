@@ -38,6 +38,10 @@ export interface ConfigHealth {
   snapshotSavedAt?: string;
   /** Local (project) keys ignored because they would weaken protection. */
   ignoredLocalKeys: string[];
+  /** Global values dropped because they had the wrong type. */
+  globalIssues: string[];
+  /** Local values dropped because they had the wrong type. */
+  localIssues: string[];
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -188,28 +192,59 @@ function projectGrantsPath(): string {
 
 type ProjectGrants = Record<string, { pattern: string; regex?: boolean }[]>;
 
-/** Project key: the directory holding `.pi`, else cwd. */
+/**
+ * Project key: the git repository root (nearest `.git`), else cwd itself.
+ * Not the nearest `.pi` directory: outside home that search climbs to `/`,
+ * so a `.pi` created in a shared parent would merge sibling projects' grants.
+ */
 export function projectKey(cwd = process.cwd()): string {
-  const local = localConfigPath(cwd);
-  return local ? dirname(dirname(dirname(local))) : resolve(cwd);
+  let dir = resolve(cwd);
+  while (true) {
+    if (existsSync(resolve(dir, ".git"))) return dir;
+    const parent = resolve(dir, "..");
+    if (parent === dir) return resolve(cwd);
+    dir = parent;
+  }
 }
 
+/**
+ * Read the grants store. A missing file is empty; an unreadable or invalid
+ * one throws, so a write never replaces other projects' grants with `{}`.
+ */
 function readProjectGrantsSync(): ProjectGrants {
+  let content: string;
   try {
-    const parsed = JSON.parse(readFileSync(projectGrantsPath(), "utf-8"));
-    return parsed && typeof parsed === "object"
-      ? (parsed as ProjectGrants)
-      : {};
-  } catch {
-    return {};
+    content = readFileSync(projectGrantsPath(), "utf-8");
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return {};
+    throw error;
   }
+  const parsed: unknown = JSON.parse(content);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${projectGrantsPath()} is not a JSON object`);
+  }
+  return parsed as ProjectGrants;
 }
 
 export function trustedProjectGrants(
   key = projectKey(),
 ): { pattern: string; regex?: boolean }[] {
-  const grants = readProjectGrantsSync()[key];
-  return Array.isArray(grants) ? grants : [];
+  let grants: unknown;
+  try {
+    grants = readProjectGrantsSync()[key];
+  } catch (error) {
+    // Fail safe: no grants means more prompts, never fewer.
+    console.error(`[guardrails] Ignoring project grants: ${error}`);
+    return [];
+  }
+  return Array.isArray(grants)
+    ? grants.filter(
+        (grant): grant is { pattern: string; regex?: boolean } =>
+          typeof grant === "object" &&
+          grant !== null &&
+          typeof grant.pattern === "string",
+      )
+    : [];
 }
 
 export async function addTrustedProjectGrant(

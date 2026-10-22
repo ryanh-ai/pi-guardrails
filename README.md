@@ -93,7 +93,20 @@ Rules are evaluated in this order:
 
 Write allow rules anchored at the start (`^\s*git\s+status…$`) and reject shell control characters, so `git status && <anything>` doesn't match.
 
-It catches built-in risky patterns like recursive deletes, privileged commands, disk formatting, broad permission changes, and configured custom patterns. You can allow once, allow for the session, deny, decline and stop (which also aborts the current turn), or configure auto-deny rules.
+It catches built-in risky patterns like recursive deletes, privileged commands, disk formatting, broad permission changes, destructive git operations, and configured custom patterns.
+
+Built-in matchers work on the parsed, unquoted command words, so `--'force'` reads as `--force`. The git matcher also expands git's long-option abbreviations (`--forc`), grouped short flags (`-uf`), and simple brace alternatives (`{+main,}`). It asks before:
+
+- any force push: `--force*`, `-f`, or a `+refspec`
+- deleting remote refs: `:ref`, `--delete`, or `-d`; and `--mirror` or `--prune` pushes
+- branch force-delete, force rename, or force copy
+- `reset --hard` and `clean -f`
+- `checkout` of paths (`--`, `.`, `--ours`/`--theirs`), `checkout -f`/`-B`, and `restore` of worktree files
+- `switch --discard-changes`/`-f`/`-C`
+- `stash drop` and `stash clear`
+- options that run commands: `-c`, `--config-env`, `--exec-path=`, `--upload-pack`/`-u` (for `ls-remote` and `clone`), `--receive-pack`, and `--exec`
+
+Like the other matchers, it is meant to catch accidents, not to contain an adversarial agent. You can allow once, allow for the session, deny, decline and stop (which also aborts the current turn), or configure auto-deny rules.
 
 [![Guardrails permission gate walkthrough](https://assets.aliou.me/github/aliou/pi-guardrails/v0.12.0/permission-gate.gif)](https://assets.aliou.me/github/aliou/pi-guardrails/v0.12.0/permission-gate.mp4)
 
@@ -131,12 +144,14 @@ Project settings can add patterns and policy rules but cannot weaken protection,
 - `permissionGate.useBuiltinMatchers: false`, `permissionGate.requireConfirmation: false`, `permissionGate.customPatterns`, and `permissionGate.allowedPatterns`
 - policy rules that reuse the id of a built-in or global rule
 
-"Allow for project" permission grants are stored outside the project, in `~/.pi/agent/state/guardrails/project-grants.json`, keyed by project root.
+"Allow for project" permission grants are stored outside the project, in `~/.pi/agent/state/guardrails/project-grants.json`, keyed by the git repository root (or the exact cwd outside a repository). "This exact command" grants match only that exact command.
+
+Values with the wrong type are dropped from both config files, with a warning: for example `"enabled": 0`, or a rule that is not an object. A config that still breaks loading is skipped (project scope first), rather than leaving tool calls unguarded.
 
 If the global file exists but can't be used (a dangling symlink, for example because its volume is unmounted, a permission error, or invalid JSON), Guardrails reports it at every session start instead of silently running on defaults:
 
 - If an earlier load succeeded, it uses the last good copy from `~/.pi/agent/state/guardrails/last-good-global.json`.
-- If no snapshot exists, every shell command needs confirmation, and is blocked without a UI.
+- If no snapshot exists, every shell command needs confirmation, and is blocked without a UI. The built-in home-secret file rules (`~/.ssh`, `~/.gnupg`, sensitive `~/.config` directories, and `~/.aws` except `config`) are also switched on.
 - Saving to the broken file is refused, so a grant can't overwrite it.
 
 Guardrails writes a `$schema` field to saved settings files, so modern editors provide autocomplete and validation. The generated schema is committed at [`schema.json`](schema.json).

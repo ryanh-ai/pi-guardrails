@@ -49,6 +49,26 @@ function notifyConfigHealth(ctx: {
       "warning",
     );
   }
+  if (health.globalIssues.length > 0) {
+    ctx.ui.notify(
+      [
+        "Guardrails: ignored invalid values in the global config:",
+        ...health.globalIssues.map((issue) => `- ${issue}`),
+        `  ${global.path}`,
+      ].join("\n"),
+      "warning",
+    );
+  }
+  if (health.localIssues.length > 0) {
+    ctx.ui.notify(
+      [
+        "Guardrails: ignored invalid values in the project config:",
+        ...health.localIssues.map((issue) => `- ${issue}`),
+        `  ${local.path}`,
+      ].join("\n"),
+      "warning",
+    );
+  }
   if (health.ignoredLocalKeys.length > 0) {
     ctx.ui.notify(
       [

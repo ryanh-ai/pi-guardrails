@@ -62,7 +62,8 @@ export async function saveCommandPersistentGrant(
   } satisfies GuardrailsConfig);
 }
 
-function exactCommandPattern(command: string): string {
+/** Regex that matches exactly `command`, nothing more. */
+export function exactCommandPattern(command: string): string {
   const escaped = command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return `^(?:${escaped})(?![\\s\\S])`;
 }

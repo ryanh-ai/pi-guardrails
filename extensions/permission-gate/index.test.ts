@@ -52,6 +52,8 @@ vi.mock("../../src/shared/config", () => {
         global: { state: "ok", path: "/agent/extensions/guardrails.json" },
         local: { state: "absent", path: "" },
         ignoredLocalKeys: [],
+        globalIssues: [],
+        localIssues: [],
       })),
     },
     addTrustedProjectGrant: vi.fn().mockResolvedValue(undefined),
@@ -242,18 +244,15 @@ describe("permissionGate extension hook", () => {
       "local",
       expect.anything(),
     );
-    expect(addTrustedProjectGrant).toHaveBeenCalledWith({
-      pattern: "dangerous-cmd",
-    });
+    // Exact grants are anchored, so "dangerous-cmd; more" still prompts.
+    const exact = { pattern: "^(?:dangerous-cmd)(?![\\s\\S])", regex: true };
+    expect(addTrustedProjectGrant).toHaveBeenCalledWith(exact);
     // Mirrored into memory so it applies right away.
     expect(configLoader.save).toHaveBeenCalledWith(
       "memory",
       expect.objectContaining({
         permissionGate: expect.objectContaining({
-          allowedPatterns: [
-            { pattern: "existing" },
-            { pattern: "dangerous-cmd" },
-          ],
+          allowedPatterns: [{ pattern: "existing" }, exact],
         }),
       }),
     );
@@ -514,6 +513,8 @@ describe("permissionGate extension hook", () => {
         },
         local: { state: "absent", path: "" },
         ignoredLocalKeys: [],
+        globalIssues: [],
+        localIssues: [],
       });
 
       const ctx = createCtx({

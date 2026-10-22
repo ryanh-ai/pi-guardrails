@@ -3,7 +3,12 @@ import { join } from "node:path";
 import { vol } from "memfs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import pkg from "../../../package.json" with { type: "json" };
-import { addTrustedProjectGrant, probeConfigFile } from "./health";
+import {
+  addTrustedProjectGrant,
+  probeConfigFile,
+  projectKey,
+  trustedProjectGrants,
+} from "./health";
 import { createGuardrailsConfigLoader } from "./loader";
 
 const AGENT = "/tmp/pi-agent-health";
@@ -220,5 +225,115 @@ describe("guardrails config health", () => {
         .getConfig()
         .permissionGate.allowedPatterns.map((pattern) => pattern.pattern),
     ).toEqual(["custom-allow", "project-grant"]);
+  });
+
+  it("does not let falsy non-boolean project values switch checks off", async () => {
+    vi.stubEnv("PI_CODING_AGENT_DIR", AGENT);
+    const cwd = process.cwd();
+    vol.fromJSON({
+      [GLOBAL]: JSON.stringify(customGlobal),
+      [join(cwd, ".pi/extensions/guardrails.json")]: JSON.stringify({
+        enabled: 0,
+        applyBuiltinDefaults: null,
+        features: { permissionGate: 0, policies: "" },
+        permissionGate: { requireConfirmation: 0, useBuiltinMatchers: null },
+      }),
+    });
+
+    const loader = createGuardrailsConfigLoader();
+    await loader.load();
+    const config = loader.getConfig();
+
+    expect(config.enabled).toBe(true);
+    expect(config.applyBuiltinDefaults).toBe(true);
+    expect(config.features.permissionGate).toBe(true);
+    expect(config.features.policies).toBe(true);
+    expect(config.permissionGate.requireConfirmation).toBe(true);
+    expect(config.permissionGate.useBuiltinMatchers).toBe(true);
+    expect(loader.getHealth().localIssues).toEqual(
+      expect.arrayContaining(["enabled", "features.permissionGate"]),
+    );
+  });
+
+  it("survives malformed project and global config shapes", async () => {
+    vi.stubEnv("PI_CODING_AGENT_DIR", AGENT);
+    const cwd = process.cwd();
+    vol.fromJSON({
+      [GLOBAL]: JSON.stringify({
+        ...customGlobal,
+        policies: { rules: [null, { id: "x" }, 5] },
+        permissionGate: {
+          autoDenyPatterns: [{ pattern: "custom-deny" }, null, "str"],
+          allowedPatterns: "nope",
+        },
+      }),
+      [join(cwd, ".pi/extensions/guardrails.json")]: JSON.stringify({
+        permissionGate: "nope",
+        policies: { rules: "nope" },
+        features: [],
+      }),
+    });
+
+    const loader = createGuardrailsConfigLoader();
+    await loader.load();
+    const config = loader.getConfig();
+
+    expect(denyPatterns(loader)).toEqual(["custom-deny"]);
+    expect(config.permissionGate.allowedPatterns).toEqual([]);
+    expect(config.policies.rules.map((rule) => rule.id)).toContain(
+      "secret-files",
+    );
+    const health = loader.getHealth();
+    expect(health.mode).toBe("normal");
+    expect(health.globalIssues).toEqual(
+      expect.arrayContaining([
+        "policies.rules[invalid entries]",
+        "permissionGate.autoDenyPatterns[invalid entries]",
+        "permissionGate.allowedPatterns",
+      ]),
+    );
+    expect(health.localIssues).toEqual(
+      expect.arrayContaining(["permissionGate", "policies", "features"]),
+    );
+  });
+
+  it("enforces the home-secret file rules while failing closed", async () => {
+    vi.stubEnv("PI_CODING_AGENT_DIR", AGENT);
+    vol.fromJSON({ [GLOBAL]: "{ not json" });
+
+    const loader = createGuardrailsConfigLoader();
+    await loader.load();
+    const rules = Object.fromEntries(
+      loader.getConfig().policies.rules.map((rule) => [rule.id, rule]),
+    );
+
+    for (const id of ["home-ssh", "home-gpg", "home-config", "home-aws"]) {
+      expect(rules[id]?.enabled).toBe(true);
+    }
+    expect(rules["secret-files"]).toBeDefined();
+  });
+
+  it("keys project grants by git root, not by a .pi in a parent directory", () => {
+    vol.fromJSON({
+      "/work/shared/.pi/.keep": "",
+      "/work/shared/repo-a/.git/HEAD": "",
+      "/work/shared/repo-a/src/.keep": "",
+      "/work/shared/loose/.keep": "",
+    });
+
+    expect(projectKey("/work/shared/repo-a/src")).toBe("/work/shared/repo-a");
+    expect(projectKey("/work/shared/loose")).toBe("/work/shared/loose");
+  });
+
+  it("refuses to overwrite a corrupt grants store and ignores it when reading", async () => {
+    vi.stubEnv("PI_CODING_AGENT_DIR", AGENT);
+    const store = `${AGENT}/state/guardrails/project-grants.json`;
+    vol.fromJSON({ [store]: "{ corrupt" });
+
+    expect(trustedProjectGrants("/repo")).toEqual([]);
+    await expect(
+      addTrustedProjectGrant({ pattern: "x" }, "/repo"),
+    ).rejects.toThrow();
+    expect(await readFile(store, "utf-8")).toBe("{ corrupt");
   });
 });
