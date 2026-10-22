@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { Rule } from "../../src/core";
 import { checkAction } from "../../src/core";
-import type { PatternConfig } from "../../src/shared/config";
+import type { ConfigHealth, PatternConfig } from "../../src/shared/config";
 import { configLoader } from "../../src/shared/config";
 import {
   createFeatureRegisterPayload,
@@ -25,6 +26,7 @@ import {
   createPermissionGateConfirmComponent,
   type PermissionGateConfirmResult,
 } from "./prompt";
+import type { PermissionGateMeta } from "./rules";
 import {
   createPermissionGateRule,
   formatAutoDenyReason,
@@ -32,6 +34,32 @@ import {
 } from "./rules";
 
 type ScopedGrantChoice = "exact" | "class" | "cancel";
+
+/**
+ * While the global config is unreadable and no snapshot exists, every shell
+ * command needs confirmation (and is blocked without a UI).
+ */
+function createFailClosedRule(health: ConfigHealth): Rule<PermissionGateMeta> {
+  const reason =
+    health.global.state === "broken"
+      ? `guardrails config unreadable (${health.global.reason}); confirming every shell command`
+      : "guardrails config unreadable; confirming every shell command";
+  return {
+    key: "permission-gate.fail-closed",
+    check(action) {
+      if (action.kind !== "command") return { kind: "pass" };
+      return {
+        kind: "match",
+        reason,
+        metadata: {
+          command: action.command,
+          description: reason,
+          pattern: "(structural)",
+        },
+      };
+    },
+  };
+}
 
 interface ScopedGrantPromptContext {
   ui: {
@@ -109,14 +137,17 @@ export default async function permissionGate(pi: ExtensionAPI) {
       event.toolName,
       event.input as Record<string, unknown>,
       ctx.cwd,
+      event.toolCallId,
     );
     if (!invocation) return;
 
     const { command } = invocation;
     const toolName = event.toolName;
     const action = { kind: "command" as const, command, origin: toolName };
-    if (isCommandAllowed(command)) return;
 
+    // Auto-deny always wins: allowed patterns and saved grants only skip the
+    // confirmation prompt. Otherwise a broad or unanchored allow rule (or a
+    // saved "all commands matching X" grant) would also bypass auto-deny.
     const autoDenyMatch = matchCommandPattern(
       command,
       config.permissionGate.autoDenyPatterns,
@@ -136,12 +167,17 @@ export default async function permissionGate(pi: ExtensionAPI) {
       return { block: true, reason };
     }
 
-    const safety = await checkAction(action, [
+    if (isCommandAllowed(command)) return;
+
+    const health = configLoader.getHealth();
+    const rules = [
+      ...(health.mode === "fail-closed" ? [createFailClosedRule(health)] : []),
       createPermissionGateRule({
         patterns: config.permissionGate.patterns,
         useBuiltinMatchers: config.permissionGate.useBuiltinMatchers,
       }),
-    ]);
+    ];
+    const safety = await checkAction(action, rules);
     if (safety.kind === "safe") return;
 
     emitRiskDetected(pi, {
@@ -251,7 +287,18 @@ export default async function permissionGate(pi: ExtensionAPI) {
 
     if (result === "allow-project" || result === "allow-global") {
       if (!scopedGrant) return;
-      await saveCommandPersistentGrant(scopedGrant.scope, scopedGrant.pattern);
+      try {
+        await saveCommandPersistentGrant(
+          scopedGrant.scope,
+          scopedGrant.pattern,
+        );
+      } catch (error) {
+        ctx.ui.notify(
+          `Command allowed once; grant not saved: ${error instanceof Error ? error.message : String(error)}`,
+          "error",
+        );
+        return;
+      }
       ctx.ui.notify(
         `Allowed pattern saved to ${scopedGrant.scope === "local" ? "project" : "global"} config`,
         "info",

@@ -1,6 +1,6 @@
 import type { Scope } from "@aliou/pi-utils-settings";
 import type { GuardrailsConfig, PatternConfig } from "../../src/shared/config";
-import { configLoader } from "../../src/shared/config";
+import { addTrustedProjectGrant, configLoader } from "../../src/shared/config";
 import { compileCommandPatterns } from "../../src/shared/matching";
 
 export type PersistentPermissionGateScope = Extract<Scope, "local" | "global">;
@@ -28,6 +28,28 @@ export async function saveCommandPersistentGrant(
   scope: PersistentPermissionGateScope,
   pattern: PatternConfig,
 ): Promise<void> {
+  if (scope === "local") {
+    // Project grants go to a store outside the project: the project's own
+    // guardrails.json is writable by the agent, so its allowedPatterns are
+    // ignored. Mirror the grant into memory so it applies right away.
+    await addTrustedProjectGrant({
+      pattern: pattern.pattern,
+      ...(pattern.regex === undefined ? {} : { regex: pattern.regex }),
+    });
+    const memory = configLoader.getRawConfig("memory") ?? {};
+    await configLoader.save("memory", {
+      ...memory,
+      permissionGate: {
+        ...memory.permissionGate,
+        allowedPatterns: [
+          ...(memory.permissionGate?.allowedPatterns ?? []),
+          pattern,
+        ],
+      },
+    });
+    return;
+  }
+
   const existing = configLoader.getRawConfig(scope) ?? {};
   const existingAllowed = existing.permissionGate?.allowedPatterns ?? [];
 

@@ -31,7 +31,11 @@ async function expandCandidate(candidate: string): Promise<string[]> {
 }
 
 export async function extractTargets(
-  event: { toolName: string; input: Record<string, unknown> },
+  event: {
+    toolName: string;
+    input: Record<string, unknown>;
+    toolCallId?: string;
+  },
   cwd: string,
   policies: CompiledPolicy[],
 ): Promise<ExtractedTarget[]> {
@@ -44,7 +48,12 @@ export async function extractTargets(
     return target ? [{ path: target, unresolved: false }] : [];
   }
 
-  const invocation = shellCommandForTool(event.toolName, event.input, cwd);
+  const invocation = shellCommandForTool(
+    event.toolName,
+    event.input,
+    cwd,
+    event.toolCallId,
+  );
   if (!invocation) return [];
   const { command } = invocation;
   // interactive_shell can run in another directory. Anchor resolved relative

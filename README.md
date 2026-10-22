@@ -41,7 +41,7 @@ The `guardrails` extension owns file protection policies and the user-facing com
 
 Use it to protect files like `.env`, private keys, local credentials, generated logs, database dumps, or any project-specific path you do not want Pi to read or modify without clear intent.
 
-Policies apply to `bash` commands and to raw `command` launches from pi-interactive-shell's `interactive_shell` tool.
+Policies apply to `bash` commands and to pi-interactive-shell's `interactive_shell` tool: raw `command` launches, and text submitted to an existing session (see [permission-gate](#permission-gate)).
 
 Policy rules respect the working directory by default (`respectCwd: true`): a location-anchored pattern (`~`- or `/`-prefixed glob such as `~/work/**`) that happens to contain the session's cwd does not neuter the workspace. Name-based patterns (`.env`), relative path globs, and regex patterns still apply inside the cwd, so secrets stay protected. Set `respectCwd: false` on a rule to enforce anchored patterns everywhere.
 
@@ -79,7 +79,19 @@ Granted paths are stored in `pathAccess.allowedPaths` as explicit `{ kind, path 
 
 ### permission-gate
 
-The `permission-gate` extension detects dangerous bash commands before they run. It also checks raw `command` launches from [pi-interactive-shell](https://github.com/nicobailon/pi-interactive-shell)'s `interactive_shell` tool (structured `spawn` launches and input sent to existing sessions are not checked).
+The `permission-gate` extension detects dangerous bash commands before they run. It also checks [pi-interactive-shell](https://github.com/nicobailon/pi-interactive-shell)'s `interactive_shell` tool:
+
+- Raw `command` launches are checked like `bash`.
+- Text sent to an existing session (`input`, `inputPaste`, `inputHex`, and literal `inputKeys`) is checked once it is submitted by Enter, a newline, or `submit: true`. Unsubmitted text is buffered per session and checked together with the text that submits it, after basic line editing (Backspace, Ctrl+C, Ctrl+U, Ctrl+W). This applies to every session, so text typed to an agent TUI can also prompt.
+- Structured `spawn` launches are not checked. Neither are lines recalled from shell history or completed with Tab, since their text never appears in the tool input.
+
+Rules are evaluated in this order:
+
+1. `autoDenyPatterns` block the command. This always wins.
+2. `allowedPatterns` and saved grants skip the confirmation prompt. They never override auto-deny, so a broad or unanchored allow rule (or a saved "all commands matching X" grant) cannot let an auto-denied command through.
+3. Built-in matchers and `patterns` ask for confirmation.
+
+Write allow rules anchored at the start (`^\s*git\s+status…$`) and reject shell control characters, so `git status && <anything>` doesn't match.
 
 It catches built-in risky patterns like recursive deletes, privileged commands, disk formatting, broad permission changes, and configured custom patterns. You can allow once, allow for the session, deny, decline and stop (which also aborts the current turn), or configure auto-deny rules.
 
@@ -112,6 +124,20 @@ Advanced users can edit the settings file directly:
 
 - Global: `~/.pi/agent/extensions/guardrails.json`
 - Project: `.pi/extensions/guardrails.json`
+
+Project settings can add patterns and policy rules but cannot weaken protection, because anything in the project (including the agent) can write that file. These project keys are ignored, with a warning at session start:
+
+- `enabled: false`, `applyBuiltinDefaults: false`, and `features.*: false`
+- `permissionGate.useBuiltinMatchers: false`, `permissionGate.requireConfirmation: false`, `permissionGate.customPatterns`, and `permissionGate.allowedPatterns`
+- policy rules that reuse the id of a built-in or global rule
+
+"Allow for project" permission grants are stored outside the project, in `~/.pi/agent/state/guardrails/project-grants.json`, keyed by project root.
+
+If the global file exists but can't be used (a dangling symlink, for example because its volume is unmounted, a permission error, or invalid JSON), Guardrails reports it at every session start instead of silently running on defaults:
+
+- If an earlier load succeeded, it uses the last good copy from `~/.pi/agent/state/guardrails/last-good-global.json`.
+- If no snapshot exists, every shell command needs confirmation, and is blocked without a UI.
+- Saving to the broken file is refused, so a grant can't overwrite it.
 
 Guardrails writes a `$schema` field to saved settings files, so modern editors provide autocomplete and validation. The generated schema is committed at [`schema.json`](schema.json).
 

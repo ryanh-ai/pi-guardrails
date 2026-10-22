@@ -13,13 +13,14 @@ export async function targetsForTool(
   toolName: string,
   input: Record<string, unknown>,
   cwd: string,
+  toolCallId?: string,
 ): Promise<string[]> {
   if (["read", "write", "edit", "grep", "find", "ls"].includes(toolName)) {
     const raw = String(input.file_path ?? input.path ?? "").trim();
     return raw ? [resolveFromCwd(raw, cwd)] : [];
   }
 
-  const invocation = shellCommandForTool(toolName, input, cwd);
+  const invocation = shellCommandForTool(toolName, input, cwd, toolCallId);
   if (!invocation) return [];
 
   const candidates = await extractBashPathCandidates(

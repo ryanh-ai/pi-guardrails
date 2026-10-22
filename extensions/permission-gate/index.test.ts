@@ -13,7 +13,7 @@ import {
   type PartialFuncReturn,
 } from "@golevelup/ts-vitest";
 import { assert, beforeEach, describe, expect, it, vi } from "vitest";
-import { configLoader } from "../../src/shared/config";
+import { addTrustedProjectGrant, configLoader } from "../../src/shared/config";
 import {
   GUARDRAILS_ACTION_BLOCKED_EVENT,
   GUARDRAILS_FEATURE_REGISTER_EVENT,
@@ -47,7 +47,14 @@ vi.mock("../../src/shared/config", () => {
       getConfig: vi.fn(() => makeConfig()),
       getRawConfig: vi.fn(() => null),
       save: vi.fn().mockResolvedValue(undefined),
+      getHealth: vi.fn(() => ({
+        mode: "normal",
+        global: { state: "ok", path: "/agent/extensions/guardrails.json" },
+        local: { state: "absent", path: "" },
+        ignoredLocalKeys: [],
+      })),
     },
+    addTrustedProjectGrant: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -202,7 +209,7 @@ describe("permissionGate extension hook", () => {
     );
   });
 
-  it("allow for project saves an exact command grant to local config after the scope prompt", async () => {
+  it("allow for project saves an exact command grant to the trusted project store after the scope prompt", async () => {
     assert(toolCallHandler, "tool_call handler should be registered");
 
     vi.mocked(configLoader.getRawConfig).mockReturnValueOnce({
@@ -230,8 +237,17 @@ describe("permissionGate extension hook", () => {
         "Cancel (allow once without saving)",
       ]),
     );
-    expect(configLoader.save).toHaveBeenCalledWith(
+    // Never written to the project's own config: the agent can edit that file.
+    expect(configLoader.save).not.toHaveBeenCalledWith(
       "local",
+      expect.anything(),
+    );
+    expect(addTrustedProjectGrant).toHaveBeenCalledWith({
+      pattern: "dangerous-cmd",
+    });
+    // Mirrored into memory so it applies right away.
+    expect(configLoader.save).toHaveBeenCalledWith(
+      "memory",
       expect.objectContaining({
         permissionGate: expect.objectContaining({
           allowedPatterns: [
@@ -424,5 +440,151 @@ describe("permissionGate extension hook", () => {
       expect(result).toBeUndefined();
     }
     expect(ctx.ui.custom).not.toHaveBeenCalled();
+  });
+
+  describe("ordering and config health", () => {
+    function config(permissionGate: Record<string, unknown>) {
+      return {
+        enabled: true,
+        features: { permissionGate: true, policies: true, pathAccess: false },
+        permissionGate: {
+          patterns: [{ pattern: "dangerous-cmd", description: "test danger" }],
+          useBuiltinMatchers: false,
+          requireConfirmation: true,
+          allowedPatterns: [],
+          autoDenyPatterns: [],
+          ...permissionGate,
+        },
+      } as unknown as ReturnType<typeof configLoader.getConfig>;
+    }
+
+    function bash(command: string, id = "order-call"): BashToolCallEvent {
+      return {
+        type: "tool_call",
+        toolCallId: id,
+        toolName: "bash",
+        input: { command },
+      };
+    }
+
+    it("auto-deny wins over a matching allowed pattern", async () => {
+      assert(toolCallHandler, "tool_call handler should be registered");
+      vi.mocked(configLoader.getConfig).mockReturnValue(
+        config({
+          allowedPatterns: [{ pattern: "\\bgit\\s+status", regex: true }],
+          autoDenyPatterns: [{ pattern: "wipe-everything" }],
+        }),
+      );
+
+      const ctx = createCtx();
+      const blocked = await toolCallHandler(
+        bash("git status && wipe-everything"),
+        ctx,
+      );
+      expect(blocked).toEqual({
+        block: true,
+        reason:
+          "Command matched auto-deny pattern and was blocked automatically.",
+      });
+
+      const allowed = await toolCallHandler(bash("git status"), ctx);
+      expect(allowed).toBeUndefined();
+      expect(ctx.ui.custom).not.toHaveBeenCalled();
+    });
+
+    it("an allowed pattern still skips the confirmation prompt", async () => {
+      assert(toolCallHandler, "tool_call handler should be registered");
+      vi.mocked(configLoader.getConfig).mockReturnValue(
+        config({ allowedPatterns: [{ pattern: "dangerous-cmd" }] }),
+      );
+
+      const ctx = createCtx();
+      expect(await toolCallHandler(bash("dangerous-cmd"), ctx)).toBeUndefined();
+      expect(ctx.ui.custom).not.toHaveBeenCalled();
+    });
+
+    it("fail-closed mode confirms every shell command", async () => {
+      assert(toolCallHandler, "tool_call handler should be registered");
+      vi.mocked(configLoader.getHealth).mockReturnValue({
+        mode: "fail-closed",
+        global: {
+          state: "broken",
+          path: "/agent/extensions/guardrails.json",
+          reason: "dangling symlink",
+        },
+        local: { state: "absent", path: "" },
+        ignoredLocalKeys: [],
+      });
+
+      const ctx = createCtx({
+        ui: { custom: vi.fn().mockResolvedValue("deny"), select: vi.fn() },
+      });
+      const result = await toolCallHandler(bash("echo hello"), ctx);
+      expect(result).toEqual({
+        block: true,
+        reason: "User denied dangerous command",
+      });
+      expect(ctx.ui.custom).toHaveBeenCalled();
+
+      const headless = await toolCallHandler(
+        bash("echo hello"),
+        createCtx({ hasUI: false }),
+      );
+      expect(headless).toMatchObject({ block: true });
+      expect((headless as { reason: string }).reason).toContain(
+        "guardrails config unreadable (dangling symlink)",
+      );
+    });
+
+    it("allows once and reports the error when saving a grant fails", async () => {
+      assert(toolCallHandler, "tool_call handler should be registered");
+      vi.mocked(configLoader.save).mockRejectedValueOnce(
+        new Error("Refusing to overwrite /agent/extensions/guardrails.json"),
+      );
+      const notify = vi.fn();
+      const ctx = createCtx({
+        ui: {
+          custom: vi.fn().mockResolvedValue("allow-global"),
+          select: vi.fn((_prompt: string, options: string[]) =>
+            Promise.resolve(options[0]),
+          ),
+          notify,
+        },
+      });
+
+      const result = await toolCallHandler(DANGEROUS_EVENT, ctx);
+      expect(result).toBeUndefined();
+      expect(notify).toHaveBeenCalledWith(
+        expect.stringContaining("grant not saved: Refusing to overwrite"),
+        "error",
+      );
+    });
+
+    it("checks text submitted to an existing interactive_shell session", async () => {
+      assert(toolCallHandler, "tool_call handler should be registered");
+      vi.mocked(configLoader.getConfig).mockReturnValue(
+        config({ autoDenyPatterns: [{ pattern: "wipe-everything" }] }),
+      );
+      const ctx = createCtx();
+      const event = (id: string, input: Record<string, unknown>) =>
+        ({
+          type: "tool_call",
+          toolCallId: id,
+          toolName: "interactive_shell",
+          input: { sessionId: "gate-session", ...input },
+        }) as ToolCallEvent;
+
+      // Typed without submitting: allowed and buffered.
+      expect(
+        await toolCallHandler(event("type-1", { input: "wipe-" }), ctx),
+      ).toBeUndefined();
+      // Enter submits the buffered line.
+      expect(
+        await toolCallHandler(
+          event("type-2", { input: "everything", inputKeys: ["enter"] }),
+          ctx,
+        ),
+      ).toMatchObject({ block: true });
+    });
   });
 });

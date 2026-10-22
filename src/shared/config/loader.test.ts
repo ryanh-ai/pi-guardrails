@@ -274,7 +274,7 @@ describe("permission gate pattern merging across scopes", () => {
     expect(patterns).toContain("project-skills-cli");
   });
 
-  it("unions permissionGate.allowedPatterns and patterns, deduped by pattern", async () => {
+  it("unions permissionGate patterns, deduped by pattern, and ignores project allowedPatterns", async () => {
     vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/pi-agent-patterns-merge");
 
     const cwd = process.cwd();
@@ -308,8 +308,12 @@ describe("permission gate pattern merging across scopes", () => {
     expect(patterns).toContain("local-only");
     expect(patterns).toContain("rm -rf");
     expect(patterns.filter((p) => p === "global-only")).toHaveLength(1);
+    // Project allowedPatterns are ignored: the agent can write that file.
     expect(
       config.permissionGate.allowedPatterns.map((p) => p.pattern).sort(),
-    ).toEqual(["allowed-a", "allowed-b"]);
+    ).toEqual(["allowed-a"]);
+    expect(configLoader.getHealth().ignoredLocalKeys).toContain(
+      "permissionGate.allowedPatterns",
+    );
   });
 });
