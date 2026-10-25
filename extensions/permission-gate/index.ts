@@ -42,8 +42,10 @@ export default async function permissionGate(pi: ExtensionAPI) {
 
     const command = event.input.command;
     const action = { kind: "command" as const, command, origin: "bash" };
-    if (isCommandAllowed(command)) return;
 
+    // Auto-deny always wins: allowed patterns and session grants only skip
+    // the confirmation prompt. Otherwise a broad or unanchored allow rule
+    // would also let an auto-denied command through.
     const autoDenyMatch = matchCommandPattern(
       command,
       config.permissionGate.autoDenyPatterns,
@@ -66,6 +68,8 @@ export default async function permissionGate(pi: ExtensionAPI) {
         ...(autoDenyMatch.terminate ? { terminate: true } : {}),
       };
     }
+
+    if (isCommandAllowed(command)) return;
 
     const safety = await checkAction(action, [
       createPermissionGateRule({

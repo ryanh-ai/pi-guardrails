@@ -192,6 +192,52 @@ describe("permissionGate extension hook", () => {
     expect(result).not.toHaveProperty("terminate");
   });
 
+  it("auto-deny wins over a matching allowed pattern", async () => {
+    vi.mocked(configLoader.getConfig).mockReturnValue(
+      makeConfig({
+        allowedPatterns: [{ pattern: "\\bgit\\s+status", regex: true }],
+        autoDenyPatterns: [{ pattern: "wipe-everything", description: "no" }],
+      }),
+    );
+
+    assert(toolCallHandler, "tool_call handler should be registered");
+    const bash = (command: string) =>
+      ({
+        type: "tool_call",
+        toolCallId: "order-call",
+        toolName: "bash",
+        input: { command },
+      }) satisfies BashToolCallEvent;
+    const ctx = createCtx();
+
+    expect(
+      await toolCallHandler(bash("git status && wipe-everything"), ctx),
+    ).toEqual({ block: true, reason: "Command auto-denied: no" });
+    // The allow rule still skips the prompt for commands it covers.
+    expect(await toolCallHandler(bash("git status"), ctx)).toBeUndefined();
+    expect(ctx.ui.custom).not.toHaveBeenCalled();
+  });
+
+  it("an allowed pattern still skips the confirmation prompt", async () => {
+    vi.mocked(configLoader.getConfig).mockReturnValue(
+      makeConfig({ allowedPatterns: [{ pattern: "dangerous-cmd" }] }),
+    );
+
+    assert(toolCallHandler, "tool_call handler should be registered");
+    const ctx = createCtx();
+    const result = await toolCallHandler(
+      {
+        type: "tool_call",
+        toolCallId: "allowed-call",
+        toolName: "bash",
+        input: { command: "dangerous-cmd" },
+      } satisfies BashToolCallEvent,
+      ctx,
+    );
+    expect(result).toBeUndefined();
+    expect(ctx.ui.custom).not.toHaveBeenCalled();
+  });
+
   it("deny returns { block: true } without aborting the turn", async () => {
     assert(toolCallHandler, "tool_call handler should be registered");
 

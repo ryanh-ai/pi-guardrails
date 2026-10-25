@@ -81,6 +81,8 @@ The `permission-gate` extension detects dangerous bash commands before they run.
 
 It catches built-in risky patterns like recursive deletes, privileged commands, disk formatting, broad permission changes, and configured custom patterns. You can allow once, allow for the session, deny, decline and stop (which also aborts the current turn), or configure auto-deny rules.
 
+Auto-deny patterns always win. `allowedPatterns` and session grants only skip the confirmation prompt; they never let an auto-denied command through.
+
 Auto-deny patterns support an optional `terminate: true` flag (pi >= 0.84.1): after blocking, the agent's turn ends instead of yielding back to the model, so it does not retry the blocked command. The turn only ends when every blocked call in the batch sets `terminate`. Example:
 
 ```json
