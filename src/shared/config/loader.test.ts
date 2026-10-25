@@ -195,6 +195,9 @@ describe("pathAccess.alwaysScope resolution", () => {
 
     const configLoader = createGuardrailsConfigLoader();
     await configLoader.load();
+    // The local config sets alwaysScope = "local"; trust the project so
+    // sanitizeUntrustedLocal does not drop it.
+    configLoader.setProjectTrusted(true, cwd);
     expect(configLoader.getConfig().pathAccess.alwaysScope).toBe("local");
 
     await configLoader.save("memory", {

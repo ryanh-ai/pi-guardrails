@@ -134,6 +134,67 @@ describe("project config and pi project trust", () => {
   });
 });
 
+describe("trust root mismatch", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vol.reset();
+  });
+
+  it("sanitizes a project config when pi says trusted but the root is an ancestor dir", async () => {
+    // Local config lives in process.cwd()/.pi/extensions/guardrails.json
+    // (configRoot = process.cwd()), but we pretend the session started in
+    // a subdirectory (cwd = process.cwd()+'/subdir') — roots don’t match.
+    vi.stubEnv("PI_CODING_AGENT_DIR", AGENT);
+    const cwd = process.cwd();
+    vol.fromJSON({
+      [GLOBAL]: JSON.stringify({ version: pkg.version }),
+      [join(cwd, ".pi/extensions/guardrails.json")]: JSON.stringify(loosening),
+    });
+    const loader = createGuardrailsConfigLoader();
+    await loader.load();
+    // Pi says trusted, but cwd is a subdirectory → roots don’t match.
+    loader.setProjectTrusted(true, join(cwd, "subdir"));
+    // Config must be sanitized (loosening ignored).
+    expect(loader.getConfig().enabled).toBe(true);
+    expect(
+      loader.getConfig().permissionGate.allowedPatterns.map((p) => p.pattern),
+    ).not.toContain("project-allow");
+    expect(loader.isProjectTrusted()).toBe(false);
+  });
+
+  it("trusts a project config when pi says trusted and the root matches cwd", async () => {
+    vi.stubEnv("PI_CODING_AGENT_DIR", AGENT);
+    const cwd = process.cwd();
+    vol.fromJSON({
+      [GLOBAL]: JSON.stringify({ version: pkg.version }),
+      [join(cwd, ".pi/extensions/guardrails.json")]: JSON.stringify(loosening),
+    });
+    const loader = createGuardrailsConfigLoader();
+    await loader.load();
+    // Pi says trusted and cwd matches the config root → trusted.
+    loader.setProjectTrusted(true, cwd);
+    expect(loader.getConfig().enabled).toBe(false);
+    expect(
+      loader.getConfig().permissionGate.allowedPatterns.map((p) => p.pattern),
+    ).toContain("project-allow");
+    expect(loader.isProjectTrusted()).toBe(true);
+  });
+
+  it("old pi without cwd treats the project as trusted (backward compat)", async () => {
+    vi.stubEnv("PI_CODING_AGENT_DIR", AGENT);
+    const cwd = process.cwd();
+    vol.fromJSON({
+      [GLOBAL]: JSON.stringify({ version: pkg.version }),
+      [join(cwd, ".pi/extensions/guardrails.json")]: JSON.stringify(loosening),
+    });
+    const loader = createGuardrailsConfigLoader();
+    await loader.load();
+    // Old pi: no isProjectTrusted, no cwd → trusted (backward compat).
+    loader.setProjectTrusted(undefined, undefined);
+    expect(loader.isProjectTrusted()).toBe(true);
+  });
+});
+
 describe("sanitizeUntrustedLocal", () => {
   it("compares pathAccess against the global setting", () => {
     const strictGlobal = { mode: "block", applyTo: "all" };
@@ -151,15 +212,29 @@ describe("sanitizeUntrustedLocal", () => {
       }).ignored,
     ).toEqual([]);
   });
+
+  it("drops alwaysScope from untrusted project config", () => {
+    const { config, ignored } = sanitizeUntrustedLocal(
+      { pathAccess: { alwaysScope: "global" } },
+      new Set(),
+      { mode: "ask", applyTo: "all" },
+    );
+    expect(config.pathAccess?.alwaysScope).toBeUndefined();
+    expect(ignored).toContain("pathAccess.alwaysScope");
+  });
 });
 
 describe("syncProjectTrust", () => {
-  it("uses ctx.isProjectTrusted(), and treats older pi as trusted", () => {
+  it("passes pi's answer and cwd to setProjectTrusted", () => {
     const spy = vi.spyOn(configLoader, "setProjectTrusted");
-    syncProjectTrust({ isProjectTrusted: () => false });
-    expect(spy).toHaveBeenLastCalledWith(false);
+    syncProjectTrust({ isProjectTrusted: () => false, cwd: "/repo" });
+    expect(spy).toHaveBeenLastCalledWith(false, "/repo");
+    // Old pi (no isProjectTrusted): passes undefined as piTrusted.
+    syncProjectTrust({ cwd: "/repo" });
+    expect(spy).toHaveBeenLastCalledWith(undefined, "/repo");
+    // No cwd available: passes undefined.
     syncProjectTrust({});
-    expect(spy).toHaveBeenLastCalledWith(true);
+    expect(spy).toHaveBeenLastCalledWith(undefined, undefined);
     spy.mockRestore();
   });
 });

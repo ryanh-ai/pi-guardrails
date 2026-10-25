@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   buildSchemaUrl,
   ConfigLoader,
@@ -113,6 +115,18 @@ class GuardrailsConfigLoader extends ConfigLoader<
    */
   protected remerge(): void {
     const internals = this.internals();
+
+    // Strip __proto__/constructor/prototype keys from the raw configs in-place
+    // and undo any Object.prototype pollution from upstream's deepMerge in
+    // super.load(). Must run before we capture rawGlobal / rawLocal so the
+    // restored references are already clean.
+    removeProtoPollutionFromRaw(
+      internals.globalConfig as unknown as Record<string, unknown> | null,
+    );
+    removeProtoPollutionFromRaw(
+      internals.localConfig as unknown as Record<string, unknown> | null,
+    );
+
     const rawGlobal = internals.globalConfig;
     const rawLocal = internals.localConfig;
     this.ignoredLocalKeys = [];
@@ -135,14 +149,65 @@ class GuardrailsConfigLoader extends ConfigLoader<
   }
 
   /**
-   * Record pi's project trust decision (ctx.isProjectTrusted() at session
-   * start) and re-merge. A trusted project's config is honored as is; an
-   * untrusted one may only tighten protection (see sanitizeUntrustedLocal).
+   * Record pi's project trust decision and the session cwd, then re-merge.
+   *
+   * `piTrusted` is the result of `ctx.isProjectTrusted()` when available,
+   * or `undefined` for older pi versions that lack the method.
+   * `cwd` is `ctx.cwd` from the `session_start` context.
+   *
+   * A project is treated as trusted only when:
+   *   - pi says it is trusted (`piTrusted === true`), AND
+   *   - the project config's root directory matches `cwd` (after realpath
+   *     canonicalization where possible) — prevents an ancestor `.pi` from
+   *     silently getting trusted semantics for a session in a subdirectory.
+   *
+   * Old-pi fallback (`piTrusted === undefined`): if `cwd` is provided, the
+   * project is trusted only when the roots match; if `cwd` is absent (very
+   * old pi context), the old behavior (always trusted) is preserved.
    */
-  setProjectTrusted(trusted: boolean): void {
+  setProjectTrusted(piTrusted: boolean | undefined, cwd?: string): void {
+    const trusted = this.computeEffectiveTrust(piTrusted, cwd);
     if (trusted === this.projectTrusted) return;
     this.projectTrusted = trusted;
     this.remerge();
+  }
+
+  /** Whether the current project is considered trusted. */
+  isProjectTrusted(): boolean {
+    return this.projectTrusted;
+  }
+
+  /**
+   * Compute the effective trust value from pi's answer and the cwd root check.
+   * See `setProjectTrusted` for the full rules.
+   */
+  private computeEffectiveTrust(
+    piTrusted: boolean | undefined,
+    cwd: string | undefined,
+  ): boolean {
+    // No cwd: cannot do root check; fall back to pi's answer (or true for old pi).
+    if (!cwd) return piTrusted ?? true;
+
+    const { localPath } = this.internals();
+    // No local config: trust doesn't matter (sanitization won't run).
+    if (!localPath) return piTrusted ?? true;
+
+    // localPath = <root>/.pi/extensions/guardrails.json
+    const configRoot = dirname(dirname(dirname(localPath)));
+    let rootsMatch: boolean;
+    try {
+      rootsMatch = realpathSync(configRoot) === realpathSync(cwd);
+    } catch {
+      // If realpath fails (e.g. in-memory fs or non-existent path), fall back
+      // to a plain string comparison.
+      rootsMatch = configRoot === cwd;
+    }
+
+    if (piTrusted === undefined) {
+      // Old pi: trust only when roots match (if cwd available).
+      return rootsMatch;
+    }
+    return piTrusted && rootsMatch;
   }
 
   /** Project keys ignored because the project is untrusted. */
@@ -186,6 +251,59 @@ class GuardrailsConfigLoader extends ConfigLoader<
 
 function isFileSystemError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error;
+}
+
+/**
+ * Strip __proto__, constructor, and prototype keys from a raw config object
+ * in place (so future deepMerge calls won't see them), and delete any
+ * own properties they added to Object.prototype via upstream's deepMerge.
+ *
+ * Uses Object.getOwnPropertyDescriptor throughout to bypass the __proto__
+ * accessor and operate on actual own properties.
+ */
+const PROTO_POLLUTION_RAW_KEYS = [
+  "__proto__",
+  "constructor",
+  "prototype",
+] as const;
+
+function removeProtoPollutionFromRaw(
+  obj: Record<string, unknown> | null | undefined,
+): void {
+  if (!obj || typeof obj !== "object") return;
+  for (const key of PROTO_POLLUTION_RAW_KEYS) {
+    const ownDesc = Object.getOwnPropertyDescriptor(obj, key);
+    if (!ownDesc) continue;
+    const injected = ownDesc.value;
+    if (injected && typeof injected === "object" && !Array.isArray(injected)) {
+      // The upstream deepMerge iterated injected's own keys and assigned them
+      // to Object.prototype.  Remove those own properties now.
+      for (const pollutedKey of Object.keys(injected as object)) {
+        const propDesc = Object.getOwnPropertyDescriptor(
+          Object.prototype,
+          pollutedKey,
+        );
+        if (propDesc?.configurable) {
+          try {
+            delete (Object.prototype as Record<string, unknown>)[pollutedKey];
+          } catch {
+            // Defensive: ignore if delete unexpectedly throws.
+          }
+        }
+      }
+    }
+    delete obj[key];
+  }
+  // Recurse into remaining own enumerable child values.
+  for (const value of Object.values(obj)) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        removeProtoPollutionFromRaw(item as Record<string, unknown>);
+      }
+    } else if (value && typeof value === "object") {
+      removeProtoPollutionFromRaw(value as Record<string, unknown>);
+    }
+  }
 }
 
 function ensureConfigVersion(config: GuardrailsConfig): GuardrailsConfig {
@@ -300,12 +418,17 @@ export const configLoader = createGuardrailsConfigLoader();
 
 /**
  * Apply pi's project trust decision to the shared loader. pi before 0.84.3
- * has no ctx.isProjectTrusted(); keep upstream behavior there (trusted).
+ * has no ctx.isProjectTrusted(); keep upstream behavior there (trusted when
+ * the project config's root matches cwd, else untrusted).
  */
 export function syncProjectTrust(ctx: {
   isProjectTrusted?: () => boolean;
+  cwd?: string;
 }): void {
   configLoader.setProjectTrusted(
-    typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : true,
+    typeof ctx.isProjectTrusted === "function"
+      ? ctx.isProjectTrusted()
+      : undefined,
+    ctx.cwd,
   );
 }

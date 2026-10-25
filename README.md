@@ -156,10 +156,12 @@ If a settings file exists but can't be read (a dangling symlink, for example bec
 
 Values with the wrong type are dropped or fixed when a settings file is loaded, and listed in a warning at session start. For example, `"enabled": 0` (falsy, but not `false`) is ignored, and a non-array `allowedPaths` no longer breaks loading. Fixes never loosen protection:
 
+- `__proto__`, `constructor`, and `prototype` keys are stripped at every depth before any merge (prototype-pollution guard);
 - invalid allow-list entries are dropped;
 - flags whose default is the stricter choice are dropped;
 - `onlyIfExists`/`respectCwd` fall back to `false`;
-- a rule with an unknown `protection` becomes `noAccess`.
+- a rule with an unknown `protection` becomes `noAccess`;
+- a truthy non-boolean `regex`/`terminate` on deny/ask pattern lists is kept as `true` — dropping it would silently disable a deny rule; on allow lists, non-boolean `regex` is still dropped.
 
 Guardrails writes a `$schema` field to saved settings files, so modern editors provide autocomplete and validation. The generated schema is committed at [`schema.json`](schema.json).
 
