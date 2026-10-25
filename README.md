@@ -83,6 +83,8 @@ The `permission-gate` extension detects dangerous bash commands before they run.
 
 It catches built-in risky patterns like recursive deletes, privileged commands, disk formatting, broad permission changes, destructive git operations, and configured custom patterns.
 
+Built-in matchers also see through common wrappers and paths: `env FOO=1 git …`, `command`, `exec`, `nice`, `nohup`, `timeout`, `xargs`, `stdbuf`, and `/usr/bin/git` or `/bin/rm`.
+
 The git matcher works on the parsed, unquoted words like the other built-in matchers, so `--'force'` reads as `--force`. It also understands git's long-option abbreviations (`--forc`), grouped short flags (`-uf`), and simple brace alternatives (`{+main,}`). It asks before:
 
 - any force push: `--force*`, `-f`, or a `+refspec`

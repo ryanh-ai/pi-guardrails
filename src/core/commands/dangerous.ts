@@ -1,6 +1,7 @@
 import { parse } from "@aliou/sh";
 import { walkCommands, wordToString } from "../shell/ast";
 import { gitRisk } from "./git";
+import { commandLevels } from "./wrappers";
 
 /**
  * Dangerous command matchers for the permission gate.
@@ -415,9 +416,13 @@ function matchBuiltinDangerous(
   words: string[],
 ): DangerousCommandMatch | undefined {
   if (words.length === 0) return undefined;
-  for (const matcher of BUILTIN_MATCHERS) {
-    const description = matcher(words);
-    if (description) return { description, pattern: "(structural)" };
+  // Also match through wrappers and path-qualified commands
+  // (`env X=1 git …`, `/bin/rm …`); the words as written come first.
+  for (const level of commandLevels(words)) {
+    for (const matcher of BUILTIN_MATCHERS) {
+      const description = matcher(level);
+      if (description) return { description, pattern: "(structural)" };
+    }
   }
   return undefined;
 }
