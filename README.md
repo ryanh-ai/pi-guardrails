@@ -131,6 +131,13 @@ Advanced users can edit the settings file directly:
 - Global: `~/.pi/agent/extensions/guardrails.json`
 - Project: `.pi/extensions/guardrails.json`
 
+Values with the wrong type are dropped or fixed when a settings file is loaded, and listed in a warning at session start. For example, `"enabled": 0` (falsy, but not `false`) is ignored, and a non-array `allowedPaths` no longer breaks loading. Fixes never loosen protection:
+
+- invalid allow-list entries are dropped;
+- flags whose default is the stricter choice are dropped;
+- `onlyIfExists`/`respectCwd` fall back to `false`;
+- a rule with an unknown `protection` becomes `noAccess`.
+
 Guardrails writes a `$schema` field to saved settings files, so modern editors provide autocomplete and validation. The generated schema is committed at [`schema.json`](schema.json).
 
 ## Examples

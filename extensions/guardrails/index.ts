@@ -94,6 +94,21 @@ export default async function guardrails(pi: ExtensionAPI) {
       createFeatureRequestPayload(),
     );
 
+    const shape = configLoader.getShapeIssues();
+    for (const [scope, issues] of [
+      ["global", shape.global],
+      ["project", shape.local],
+    ] as const) {
+      if (issues.length === 0) continue;
+      ctx.ui.notify(
+        [
+          `Guardrails: ignored or fixed invalid values in the ${scope} config:`,
+          ...issues.map((issue) => `- ${issue}`),
+        ].join("\n"),
+        "warning",
+      );
+    }
+
     const warnings = configLoader.drainMessages();
     if (warnings.length === 1) {
       ctx.ui.notify(warnings[0], "warning");
