@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { checkAction } from "../../src/core";
-import { configLoader } from "../../src/shared/config";
+import { configLoader, syncProjectTrust } from "../../src/shared/config";
 import {
   createFeatureRequestPayload,
   emitActionBlocked,
@@ -86,6 +86,7 @@ export default async function guardrails(pi: ExtensionAPI) {
   setupPolicyHook(pi);
 
   pi.on("session_start", (_event, ctx) => {
+    syncProjectTrust(ctx);
     loadedFeatures.clear();
     loadedFeatures.add("policies");
 
@@ -108,6 +109,18 @@ export default async function guardrails(pi: ExtensionAPI) {
     if (files.local?.state === "broken") {
       ctx.ui.notify(
         `Guardrails: the project config can't be read and was skipped (${files.local.reason}).\n  ${files.local.path}`,
+        "warning",
+      );
+    }
+
+    const ignored = configLoader.getIgnoredLocalKeys();
+    if (ignored.length > 0) {
+      ctx.ui.notify(
+        [
+          "Guardrails: this project is not trusted, so project settings that would loosen protection are ignored:",
+          ...ignored.map((key) => `- ${key}`),
+          "Trust the project in pi to apply them.",
+        ].join("\n"),
         "warning",
       );
     }

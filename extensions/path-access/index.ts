@@ -6,7 +6,7 @@ import {
   normalizeForDisplay,
   type PathAccessState,
 } from "../../src/core/paths";
-import { configLoader } from "../../src/shared/config";
+import { configLoader, syncProjectTrust } from "../../src/shared/config";
 import {
   createFeatureRegisterPayload,
   createPromptClosedPayload,
@@ -73,6 +73,8 @@ export default async function pathAccess(pi: ExtensionAPI) {
     );
   });
   setupLegacyPromptEventAlias(pi, "pathAccess");
+
+  pi.on("session_start", (_event, ctx) => syncProjectTrust(ctx));
 
   pi.on("tool_call", async (event, ctx) => {
     const config = configLoader.getConfig();

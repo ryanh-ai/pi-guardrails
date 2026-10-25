@@ -7,6 +7,7 @@ import pkg from "../../../package.json" with { type: "json" };
 import type { AllowedPath } from "../../core/paths/path";
 import { DEFAULT_CONFIG } from "./defaults";
 import { type ConfigFileState, probeConfigFile } from "./health";
+import { sanitizeUntrustedLocal } from "./local-scope";
 import { migrations } from "./migration";
 import { normalizeConfigShape } from "./shape";
 import type { GuardrailsConfig, PolicyRule, ResolvedConfig } from "./types";
@@ -34,6 +35,9 @@ class GuardrailsConfigLoader extends ConfigLoader<
   ResolvedConfig
 > {
   private shapeIssues: ShapeIssues = { global: [], local: [] };
+  /** Until pi reports trust at session start, treat the project as untrusted. */
+  private projectTrusted = false;
+  private ignoredLocalKeys: string[] = [];
   private fileStates: { global?: ConfigFileState; local?: ConfigFileState } =
     {};
 
@@ -97,6 +101,7 @@ class GuardrailsConfigLoader extends ConfigLoader<
     const internals = this.internals();
     const rawGlobal = internals.globalConfig;
     const rawLocal = internals.localConfig;
+    this.ignoredLocalKeys = [];
     const global = rawGlobal ? normalizeConfigShape(rawGlobal) : null;
     const local = rawLocal ? normalizeConfigShape(rawLocal) : null;
     this.shapeIssues = {
@@ -104,7 +109,9 @@ class GuardrailsConfigLoader extends ConfigLoader<
       local: local?.issues ?? [],
     };
     internals.globalConfig = global?.config ?? null;
-    internals.localConfig = local ? this.transformLocal(local.config) : null;
+    internals.localConfig = local
+      ? this.restrictLocal(local.config, global?.config ?? null)
+      : null;
     try {
       internals.resolved = internals.merge();
     } finally {
@@ -113,8 +120,42 @@ class GuardrailsConfigLoader extends ConfigLoader<
     }
   }
 
-  /** Hook for the project scope after shape checks. */
-  protected transformLocal(config: GuardrailsConfig): GuardrailsConfig {
+  /**
+   * Record pi's project trust decision (ctx.isProjectTrusted() at session
+   * start) and re-merge. A trusted project's config is honored as is; an
+   * untrusted one may only tighten protection (see sanitizeUntrustedLocal).
+   */
+  setProjectTrusted(trusted: boolean): void {
+    if (trusted === this.projectTrusted) return;
+    this.projectTrusted = trusted;
+    this.remerge();
+  }
+
+  /** Project keys ignored because the project is untrusted. */
+  getIgnoredLocalKeys(): string[] {
+    return this.ignoredLocalKeys;
+  }
+
+  private restrictLocal(
+    local: GuardrailsConfig,
+    global: GuardrailsConfig | null,
+  ): GuardrailsConfig {
+    this.ignoredLocalKeys = [];
+    if (this.projectTrusted) return local;
+    const protectedRuleIds = new Set<string>([
+      ...DEFAULT_CONFIG.policies.rules.map((rule) => rule.id),
+      ...(global?.policies?.rules ?? []).map((rule) => rule.id),
+    ]);
+    const { config, ignored } = sanitizeUntrustedLocal(
+      local,
+      protectedRuleIds,
+      {
+        mode: global?.pathAccess?.mode ?? DEFAULT_CONFIG.pathAccess.mode,
+        applyTo:
+          global?.pathAccess?.applyTo ?? DEFAULT_CONFIG.pathAccess.applyTo,
+      },
+    );
+    this.ignoredLocalKeys = ignored;
     return config;
   }
 
@@ -253,3 +294,15 @@ function resolveScopes(
 }
 
 export const configLoader = createGuardrailsConfigLoader();
+
+/**
+ * Apply pi's project trust decision to the shared loader. pi before 0.84.3
+ * has no ctx.isProjectTrusted(); keep upstream behavior there (trusted).
+ */
+export function syncProjectTrust(ctx: {
+  isProjectTrusted?: () => boolean;
+}): void {
+  configLoader.setProjectTrusted(
+    typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : true,
+  );
+}

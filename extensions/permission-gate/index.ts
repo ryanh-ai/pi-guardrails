@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { checkAction } from "../../src/core";
-import { configLoader } from "../../src/shared/config";
+import { configLoader, syncProjectTrust } from "../../src/shared/config";
 import {
   createFeatureRegisterPayload,
   createPromptClosedPayload,
@@ -32,6 +32,8 @@ export default async function permissionGate(pi: ExtensionAPI) {
     );
   });
   setupLegacyPromptEventAlias(pi, "permissionGate");
+
+  pi.on("session_start", (_event, ctx) => syncProjectTrust(ctx));
 
   pi.on("tool_call", async (event, ctx) => {
     const config = configLoader.getConfig();

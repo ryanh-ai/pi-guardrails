@@ -299,6 +299,8 @@ describe("permission gate pattern merging across scopes", () => {
 
     const configLoader = createGuardrailsConfigLoader();
     await configLoader.load();
+    // pi trusts the project, so its allowedPatterns apply (upstream behavior).
+    configLoader.setProjectTrusted(true);
     const config = configLoader.getConfig();
 
     // Defaults are included (same as builtin policy rules); scope arrays are
