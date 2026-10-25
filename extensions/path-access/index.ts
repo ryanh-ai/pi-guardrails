@@ -46,6 +46,23 @@ function notifyGrantFallback(
   ctx.ui.notify(`Access allowed for this session only: ${error}`, "warning");
 }
 
+function untrustedAlwaysScope(
+  resolvedScope: string,
+  ctx: {
+    ui: { notify(message: string, type?: "info" | "warning" | "error"): void };
+  },
+): "memory" | "local" | "global" {
+  if (resolvedScope === "local" && !configLoader.isProjectTrusted()) {
+    ctx.ui.notify(
+      "Access allowed for this session only: " +
+        "project is not trusted, so the grant cannot be saved to the project config.",
+      "warning",
+    );
+    return "memory";
+  }
+  return resolvedScope as "memory" | "local" | "global";
+}
+
 export default async function pathAccess(pi: ExtensionAPI) {
   await configLoader.load();
 
@@ -196,13 +213,11 @@ export default async function pathAccess(pi: ExtensionAPI) {
       }
 
       if (result === "allow-file-session" || result === "allow-file-always") {
-        const grant = createPendingGrant(
-          absolutePath,
-          false,
+        const scope =
           result === "allow-file-session"
             ? "memory"
-            : config.pathAccess.alwaysScope,
-        );
+            : untrustedAlwaysScope(config.pathAccess.alwaysScope, ctx);
+        const grant = createPendingGrant(absolutePath, false, scope);
         acceptedGrants.push(grant);
         notifyGrantFallback(ctx, await persistGrant(grant));
         continue;
@@ -218,13 +233,11 @@ export default async function pathAccess(pi: ExtensionAPI) {
           );
           continue;
         }
-        const grant = createPendingGrant(
-          dirPath,
-          true,
+        const dirScope =
           result === "allow-dir-session"
             ? "memory"
-            : config.pathAccess.alwaysScope,
-        );
+            : untrustedAlwaysScope(config.pathAccess.alwaysScope, ctx);
+        const grant = createPendingGrant(dirPath, true, dirScope);
         acceptedGrants.push(grant);
         notifyGrantFallback(ctx, await persistGrant(grant));
         continue;

@@ -20,6 +20,9 @@ import type { GuardrailsConfig, PolicyRule } from "./types";
  *
  * Expects a shape-checked config (see normalizeConfigShape). Returns the
  * filtered copy and the dotted keys that were ignored.
+ *
+ * `pathAccess.alwaysScope` is also dropped: an untrusted project must not be
+ * able to redirect the user's "always" grants to global scope.
  */
 const MODE_RANK: Record<string, number> = { allow: 0, ask: 1, block: 2 };
 const APPLY_TO_RANK: Record<string, number> = { write: 0, all: 1 };
@@ -93,6 +96,11 @@ export function sanitizeUntrustedLocal(
     }
     if (Array.isArray(access.allowedPaths) && access.allowedPaths.length > 0) {
       drop(access, "allowedPaths", "pathAccess.allowedPaths");
+    }
+    // Prevent the project from redirecting the user's "always" grants to
+    // global scope (or any scope other than the default).
+    if (access.alwaysScope !== undefined) {
+      drop(access, "alwaysScope", "pathAccess.alwaysScope");
     }
   }
 

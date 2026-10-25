@@ -42,6 +42,7 @@ vi.mock("../../src/shared/config", () => ({
     save: vi.fn(async (scope: string, config: Record<string, unknown>) => {
       mockState.saves.push({ scope, config });
     }),
+    isProjectTrusted: vi.fn(() => true),
   },
 }));
 

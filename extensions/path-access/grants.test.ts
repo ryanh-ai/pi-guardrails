@@ -113,4 +113,22 @@ describe("persistGrant", () => {
       await persistGrant(createPendingGrant("/tmp/outside", true, "memory")),
     ).toBeUndefined();
   });
+
+  it("persistGrant with 'local' scope saves to local when the project is trusted", async () => {
+    vol.fromJSON({ "/tmp/.keep": "" });
+    await configLoader.load();
+    const save = vi.spyOn(configLoader, "save").mockResolvedValue(undefined);
+    vi.spyOn(configLoader, "isProjectTrusted").mockReturnValue(true);
+
+    await persistGrant(createPendingGrant("/tmp/outside", true, "local"));
+
+    expect(save).toHaveBeenCalledWith(
+      "local",
+      expect.objectContaining({
+        pathAccess: expect.objectContaining({
+          allowedPaths: [{ kind: "directory", path: "/tmp/outside" }],
+        }),
+      }),
+    );
+  });
 });
