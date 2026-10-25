@@ -47,7 +47,13 @@ class GuardrailsConfigLoader extends ConfigLoader<
    */
   override async load(): Promise<void> {
     await this.probeFiles();
-    await super.load();
+    try {
+      await super.load();
+    } catch (error) {
+      // Reads and migrations never throw upstream; only the merge of a
+      // malformed file can. remerge() merges cleaned copies instead.
+      if (isFileSystemError(error)) throw error;
+    }
     this.remerge();
   }
 
@@ -71,7 +77,15 @@ class GuardrailsConfigLoader extends ConfigLoader<
         );
       }
     }
-    await super.save(scope, ensureConfigVersion(config));
+    try {
+      await super.save(scope, ensureConfigVersion(config));
+    } catch (error) {
+      // The write happens before the merge; only a write failure or a bad
+      // scope should surface. A malformed file breaking the merge is handled
+      // by remerge().
+      if (isFileSystemError(error) || !(error instanceof TypeError))
+        throw error;
+    }
     this.remerge();
   }
 
@@ -170,6 +184,10 @@ class GuardrailsConfigLoader extends ConfigLoader<
   }
 }
 
+function isFileSystemError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error;
+}
+
 function ensureConfigVersion(config: GuardrailsConfig): GuardrailsConfig {
   if (typeof config.version === "string" && config.version.trim()) {
     return config;
@@ -194,103 +212,88 @@ export function createGuardrailsConfigLoader(): GuardrailsConfigLoader {
     scopes: ["global", "local", "memory"],
     migrations,
     schemaUrl: buildSchemaUrl(pkg.name, pkg.version),
-    // Upstream merges the raw files before remerge() runs on cleaned copies.
-    // A malformed file must not make that first merge throw.
     afterMerge: (resolved, global, local, memory) => {
-      try {
-        return resolveScopes(resolved, global, local, memory);
-      } catch {
-        return resolved;
+      const ruleMap = new Map<string, PolicyRule>();
+
+      if (resolved.applyBuiltinDefaults) {
+        for (const rule of DEFAULT_CONFIG.policies.rules) {
+          ruleMap.set(rule.id, rule);
+        }
       }
+      if (global?.policies?.rules) {
+        for (const rule of global.policies.rules) {
+          ruleMap.set(rule.id, rule);
+        }
+      }
+      if (local?.policies?.rules) {
+        for (const rule of local.policies.rules) {
+          ruleMap.set(rule.id, rule);
+        }
+      }
+      if (memory?.policies?.rules) {
+        for (const rule of memory.policies.rules) {
+          ruleMap.set(rule.id, rule);
+        }
+      }
+      resolved.policies.rules = [...ruleMap.values()];
+
+      // Pattern arrays union across scopes by `pattern`; customPatterns
+      // still replaces patterns wholesale.
+      const customPatterns =
+        memory?.permissionGate?.customPatterns ??
+        local?.permissionGate?.customPatterns ??
+        global?.permissionGate?.customPatterns;
+      if (customPatterns) {
+        resolved.permissionGate.patterns = customPatterns;
+        resolved.permissionGate.useBuiltinMatchers = false;
+      } else {
+        resolved.permissionGate.patterns = mergePatternArrays(
+          DEFAULT_CONFIG.permissionGate.patterns,
+          global?.permissionGate?.patterns,
+          local?.permissionGate?.patterns,
+          memory?.permissionGate?.patterns,
+        );
+      }
+
+      resolved.permissionGate.allowedPatterns = mergePatternArrays(
+        global?.permissionGate?.allowedPatterns,
+        local?.permissionGate?.allowedPatterns,
+        memory?.permissionGate?.allowedPatterns,
+      );
+
+      resolved.permissionGate.autoDenyPatterns = mergePatternArrays(
+        global?.permissionGate?.autoDenyPatterns,
+        local?.permissionGate?.autoDenyPatterns,
+        memory?.permissionGate?.autoDenyPatterns,
+      );
+
+      const mergedPaths = new Map<string, AllowedPath>();
+      for (const paths of [
+        global?.pathAccess?.allowedPaths,
+        local?.pathAccess?.allowedPaths,
+        memory?.pathAccess?.allowedPaths,
+      ]) {
+        for (const entry of paths ?? []) {
+          if (!entry || typeof entry !== "object") continue;
+          const path = typeof entry.path === "string" ? entry.path.trim() : "";
+          if (!path) continue;
+          const kind = entry.kind === "directory" ? "directory" : "file";
+          mergedPaths.set(`${kind}:${path}`, { kind, path });
+        }
+      }
+      resolved.pathAccess.allowedPaths = [...mergedPaths.values()];
+
+      // alwaysScope: highest-priority scope wins (memory > local > global).
+      // Invalid values are ignored so they cannot leak through the base
+      // deep merge into the resolved config.
+      const alwaysScope = [memory, local, global]
+        .map((scope) => scope?.pathAccess?.alwaysScope)
+        .find((value) => value === "local" || value === "global");
+      resolved.pathAccess.alwaysScope = alwaysScope ?? "local";
+
+      return resolved;
     },
   });
-}
-
-function resolveScopes(
-  resolved: ResolvedConfig,
-  global: GuardrailsConfig | null,
-  local: GuardrailsConfig | null,
-  memory: GuardrailsConfig | null,
-): ResolvedConfig {
-  const ruleMap = new Map<string, PolicyRule>();
-
-  if (resolved.applyBuiltinDefaults) {
-    for (const rule of DEFAULT_CONFIG.policies.rules) {
-      ruleMap.set(rule.id, rule);
-    }
-  }
-  if (global?.policies?.rules) {
-    for (const rule of global.policies.rules) {
-      ruleMap.set(rule.id, rule);
-    }
-  }
-  if (local?.policies?.rules) {
-    for (const rule of local.policies.rules) {
-      ruleMap.set(rule.id, rule);
-    }
-  }
-  if (memory?.policies?.rules) {
-    for (const rule of memory.policies.rules) {
-      ruleMap.set(rule.id, rule);
-    }
-  }
-  resolved.policies.rules = [...ruleMap.values()];
-
-  // Pattern arrays union across scopes by `pattern`; customPatterns
-  // still replaces patterns wholesale.
-  const customPatterns =
-    memory?.permissionGate?.customPatterns ??
-    local?.permissionGate?.customPatterns ??
-    global?.permissionGate?.customPatterns;
-  if (customPatterns) {
-    resolved.permissionGate.patterns = customPatterns;
-    resolved.permissionGate.useBuiltinMatchers = false;
-  } else {
-    resolved.permissionGate.patterns = mergePatternArrays(
-      DEFAULT_CONFIG.permissionGate.patterns,
-      global?.permissionGate?.patterns,
-      local?.permissionGate?.patterns,
-      memory?.permissionGate?.patterns,
-    );
-  }
-
-  resolved.permissionGate.allowedPatterns = mergePatternArrays(
-    global?.permissionGate?.allowedPatterns,
-    local?.permissionGate?.allowedPatterns,
-    memory?.permissionGate?.allowedPatterns,
-  );
-
-  resolved.permissionGate.autoDenyPatterns = mergePatternArrays(
-    global?.permissionGate?.autoDenyPatterns,
-    local?.permissionGate?.autoDenyPatterns,
-    memory?.permissionGate?.autoDenyPatterns,
-  );
-
-  const mergedPaths = new Map<string, AllowedPath>();
-  for (const paths of [
-    global?.pathAccess?.allowedPaths,
-    local?.pathAccess?.allowedPaths,
-    memory?.pathAccess?.allowedPaths,
-  ]) {
-    for (const entry of paths ?? []) {
-      if (!entry || typeof entry !== "object") continue;
-      const path = typeof entry.path === "string" ? entry.path.trim() : "";
-      if (!path) continue;
-      const kind = entry.kind === "directory" ? "directory" : "file";
-      mergedPaths.set(`${kind}:${path}`, { kind, path });
-    }
-  }
-  resolved.pathAccess.allowedPaths = [...mergedPaths.values()];
-
-  // alwaysScope: highest-priority scope wins (memory > local > global).
-  // Invalid values are ignored so they cannot leak through the base
-  // deep merge into the resolved config.
-  const alwaysScope = [memory, local, global]
-    .map((scope) => scope?.pathAccess?.alwaysScope)
-    .find((value) => value === "local" || value === "global");
-  resolved.pathAccess.alwaysScope = alwaysScope ?? "local";
-
-  return resolved;
 }
 
 export const configLoader = createGuardrailsConfigLoader();
