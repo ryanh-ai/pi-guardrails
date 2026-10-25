@@ -111,6 +111,10 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
         pattern: "docker run --privileged",
         description: "container with privileged mode",
       },
+      {
+        pattern: "git push --force",
+        description: "destructive git operation",
+      },
     ],
     useBuiltinMatchers: true,
     requireConfirmation: true,

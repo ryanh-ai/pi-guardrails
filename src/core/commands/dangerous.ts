@@ -1,5 +1,6 @@
 import { parse } from "@aliou/sh";
 import { walkCommands, wordToString } from "../shell/ast";
+import { gitRisk } from "./git";
 
 /**
  * Dangerous command matchers for the permission gate.
@@ -298,6 +299,18 @@ const containerMatcher: StructuralMatcher = (words) => {
 };
 
 // =============================================================================
+// Version Control
+// =============================================================================
+
+/**
+ * Destructive or code-executing git: force pushes (incl. +refspec, quoted
+ * or abbreviated flags), remote ref deletion, --mirror/--prune, branch
+ * force-delete, reset --hard, clean -f, path checkout/restore, stash
+ * drop/clear, and -c / --upload-pack / --receive-pack / --exec overrides.
+ */
+const gitMatcher: StructuralMatcher = (words) => gitRisk(words);
+
+// =============================================================================
 // Matcher Registry
 // =============================================================================
 
@@ -329,6 +342,9 @@ export const BUILTIN_MATCHERS: StructuralMatcher[] = [
 
   // Container escapes
   containerMatcher,
+
+  // Version control
+  gitMatcher,
 ];
 
 /**
@@ -350,6 +366,7 @@ export const BUILTIN_KEYWORD_PATTERNS = new Set([
   "fdisk",
   "parted",
   "docker run --privileged",
+  "git push --force",
 ]);
 
 /**

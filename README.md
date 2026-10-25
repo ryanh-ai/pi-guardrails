@@ -81,7 +81,19 @@ Granted paths are stored in `pathAccess.allowedPaths` as explicit `{ kind, path 
 
 The `permission-gate` extension detects dangerous bash commands before they run. It also checks raw `command` launches from [pi-interactive-shell](https://github.com/nicobailon/pi-interactive-shell)'s `interactive_shell` tool (structured `spawn` launches and input sent to existing sessions are not checked).
 
-It catches built-in risky patterns like recursive deletes, privileged commands, disk formatting, broad permission changes, and configured custom patterns. You can allow once, allow for the session, deny, decline and stop (which also aborts the current turn), or configure auto-deny rules.
+It catches built-in risky patterns like recursive deletes, privileged commands, disk formatting, broad permission changes, destructive git operations, and configured custom patterns.
+
+The git matcher works on the parsed, unquoted words like the other built-in matchers, so `--'force'` reads as `--force`. It also understands git's long-option abbreviations (`--forc`), grouped short flags (`-uf`), and simple brace alternatives (`{+main,}`). It asks before:
+
+- any force push: `--force*`, `-f`, or a `+refspec`
+- deleting remote refs (`:ref`, `--delete`, `-d`), and `--mirror` or `--prune` pushes
+- force-deleting, force-renaming, or resetting a branch (`-D`, `-d -f`, `-M`, `-C`, `-f <name> <start>`)
+- `reset --hard`, `clean -f`, and `worktree remove --force`
+- `checkout` of paths (`--`, `.`, `--ours`/`--theirs`), `checkout -f`/`-B`, and `restore` of worktree files
+- `switch --discard-changes`/`-f`/`-C`
+- `stash drop` and `stash clear`
+
+`checkout <path>` without `--` is ambiguous with a branch name, so it is not flagged. Options that make git run another program (`-c`, `--upload-pack`, hooks, aliases) are out of scope. You can allow once, allow for the session, deny, decline and stop (which also aborts the current turn), or configure auto-deny rules.
 
 Auto-deny patterns always win. `allowedPatterns` and session grants only skip the confirmation prompt; they never let an auto-denied command through.
 
