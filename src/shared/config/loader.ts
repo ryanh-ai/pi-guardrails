@@ -6,6 +6,7 @@ import {
 import pkg from "../../../package.json" with { type: "json" };
 import type { AllowedPath } from "../../core/paths/path";
 import { DEFAULT_CONFIG } from "./defaults";
+import { type ConfigFileState, probeConfigFile } from "./health";
 import { migrations } from "./migration";
 import { normalizeConfigShape } from "./shape";
 import type { GuardrailsConfig, PolicyRule, ResolvedConfig } from "./types";
@@ -15,6 +16,8 @@ import type { GuardrailsConfig, PolicyRule, ResolvedConfig } from "./types";
  * are private upstream; config-loader.test.ts fails if they change.
  */
 interface LoaderInternals {
+  globalPath: string | null;
+  localPath: string | null;
   globalConfig: GuardrailsConfig | null;
   localConfig: GuardrailsConfig | null;
   resolved: ResolvedConfig | null;
@@ -31,19 +34,54 @@ class GuardrailsConfigLoader extends ConfigLoader<
   ResolvedConfig
 > {
   private shapeIssues: ShapeIssues = { global: [], local: [] };
+  private fileStates: { global?: ConfigFileState; local?: ConfigFileState } =
+    {};
 
   /**
    * Load and save as upstream does, then merge again from shape-checked
    * copies of the file configs (see remerge).
    */
   override async load(): Promise<void> {
+    await this.probeFiles();
     await super.load();
     this.remerge();
   }
 
+  /**
+   * Refuse to write over a settings file that exists but can't be read. The
+   * loader saw it as empty, so saving would replace it with just the new
+   * values. Health is re-checked now, not taken from load time.
+   */
   override async save(scope: Scope, config: GuardrailsConfig): Promise<void> {
+    const path =
+      scope === "global"
+        ? this.internals().globalPath
+        : scope === "local"
+          ? this.internals().localPath
+          : null;
+    if (path) {
+      const state = await probeConfigFile(path);
+      if (state.state === "broken") {
+        throw new Error(
+          `Refusing to overwrite ${path}: ${state.reason}. Fix the file, then /reload.`,
+        );
+      }
+    }
     await super.save(scope, ensureConfigVersion(config));
     this.remerge();
+  }
+
+  /** Global and project settings file health from the last load. */
+  getFileStates(): { global?: ConfigFileState; local?: ConfigFileState } {
+    return this.fileStates;
+  }
+
+  private async probeFiles(): Promise<void> {
+    const { globalPath, localPath } = this.internals();
+    this.fileStates = {
+      global: globalPath ? await probeConfigFile(globalPath) : undefined,
+      local: localPath ? await probeConfigFile(localPath) : undefined,
+    };
   }
 
   /** Values dropped or fixed because they had the wrong type. */

@@ -94,6 +94,24 @@ export default async function guardrails(pi: ExtensionAPI) {
       createFeatureRequestPayload(),
     );
 
+    const files = configLoader.getFileStates();
+    if (files.global?.state === "broken") {
+      ctx.ui.notify(
+        [
+          `Guardrails: the global config can't be read (${files.global.reason}).`,
+          `  ${files.global.path}`,
+          "Running on built-in defaults: your custom rules are NOT active. Saving to this file is refused until it is fixed and pi is reloaded.",
+        ].join("\n"),
+        "error",
+      );
+    }
+    if (files.local?.state === "broken") {
+      ctx.ui.notify(
+        `Guardrails: the project config can't be read and was skipped (${files.local.reason}).\n  ${files.local.path}`,
+        "warning",
+      );
+    }
+
     const shape = configLoader.getShapeIssues();
     for (const [scope, issues] of [
       ["global", shape.global],

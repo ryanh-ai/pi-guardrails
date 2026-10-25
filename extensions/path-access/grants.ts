@@ -50,7 +50,25 @@ export function createPendingGrant(
   };
 }
 
-export async function persistGrant(grant: PendingPathGrant): Promise<void> {
+/**
+ * Save a grant. If its settings file can't be written (for example it exists
+ * but is unreadable, so the loader refuses to overwrite it), keep the grant
+ * for this session instead. Returns the error message in that case.
+ */
+export async function persistGrant(
+  grant: PendingPathGrant,
+): Promise<string | undefined> {
+  try {
+    await saveGrant(grant);
+    return undefined;
+  } catch (error) {
+    if (grant.scope === "memory") throw error;
+    await saveGrant({ ...grant, scope: "memory" });
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function saveGrant(grant: PendingPathGrant): Promise<void> {
   const raw = (configLoader.getRawConfig(grant.scope) ?? {}) as Record<
     string,
     unknown

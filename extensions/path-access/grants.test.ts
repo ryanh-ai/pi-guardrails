@@ -1,9 +1,12 @@
 import { homedir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { vol } from "memfs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { configLoader } from "../../src/shared/config";
 import {
   createPendingGrant,
   isGrantTooBroad,
   pendingAllowedPaths,
+  persistGrant,
   resolveAllowedPaths,
 } from "./grants";
 
@@ -72,5 +75,42 @@ describe("path access grants", () => {
       scope: "global",
       storageGrant: { kind: "directory", path: "/tmp/logs" },
     });
+  });
+});
+
+describe("persistGrant", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("keeps the grant for the session when its file can't be written", async () => {
+    vol.fromJSON({ "/tmp/.keep": "" });
+    await configLoader.load();
+    const save = vi.spyOn(configLoader, "save");
+    save.mockRejectedValueOnce(new Error("Refusing to overwrite x"));
+
+    const error = await persistGrant(
+      createPendingGrant("/tmp/outside", true, "global"),
+    );
+
+    expect(error).toBe("Refusing to overwrite x");
+    expect(save).toHaveBeenLastCalledWith(
+      "memory",
+      expect.objectContaining({
+        pathAccess: expect.objectContaining({
+          allowedPaths: [{ kind: "directory", path: "/tmp/outside" }],
+        }),
+      }),
+    );
+  });
+
+  it("returns nothing when the grant saves normally", async () => {
+    vol.fromJSON({ "/tmp/.keep": "" });
+    await configLoader.load();
+    vi.spyOn(configLoader, "save").mockResolvedValue(undefined);
+
+    expect(
+      await persistGrant(createPendingGrant("/tmp/outside", true, "memory")),
+    ).toBeUndefined();
   });
 });

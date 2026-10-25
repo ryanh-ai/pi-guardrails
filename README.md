@@ -131,6 +131,8 @@ Advanced users can edit the settings file directly:
 - Global: `~/.pi/agent/extensions/guardrails.json`
 - Project: `.pi/extensions/guardrails.json`
 
+If a settings file exists but can't be read (a dangling symlink, for example because its volume is unmounted, a permission error, or invalid JSON), Guardrails reports it at every session start instead of silently running on defaults. It refuses to save over that file, so a grant can't replace it. Path-access "always" grants fall back to the current session.
+
 Values with the wrong type are dropped or fixed when a settings file is loaded, and listed in a warning at session start. For example, `"enabled": 0` (falsy, but not `false`) is ignored, and a non-array `allowedPaths` no longer breaks loading. Fixes never loosen protection:
 
 - invalid allow-list entries are dropped;

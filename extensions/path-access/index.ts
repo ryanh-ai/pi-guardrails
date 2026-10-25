@@ -36,6 +36,16 @@ import {
 import { createPathAccessRule } from "./rules";
 import { isReadOnlyTool, targetsForTool } from "./targets";
 
+function notifyGrantFallback(
+  ctx: {
+    ui: { notify(message: string, type?: "info" | "warning" | "error"): void };
+  },
+  error: string | undefined,
+): void {
+  if (!error) return;
+  ctx.ui.notify(`Access allowed for this session only: ${error}`, "warning");
+}
+
 export default async function pathAccess(pi: ExtensionAPI) {
   await configLoader.load();
 
@@ -192,7 +202,7 @@ export default async function pathAccess(pi: ExtensionAPI) {
             : config.pathAccess.alwaysScope,
         );
         acceptedGrants.push(grant);
-        await persistGrant(grant);
+        notifyGrantFallback(ctx, await persistGrant(grant));
         continue;
       }
 
@@ -214,7 +224,7 @@ export default async function pathAccess(pi: ExtensionAPI) {
             : config.pathAccess.alwaysScope,
         );
         acceptedGrants.push(grant);
-        await persistGrant(grant);
+        notifyGrantFallback(ctx, await persistGrant(grant));
         continue;
       }
 
