@@ -9,11 +9,16 @@ import type { GuardrailsConfig } from "./types";
  * only the offending value and reports it.
  *
  * Never loosen a config while fixing it:
+ * - `__proto__`, `constructor`, and `prototype` keys are stripped at every
+ *   depth before any other processing (prototype-pollution guard);
  * - invalid entries in allow lists are dropped (fewer exceptions);
  * - an invalid flag whose default is the stricter choice is dropped;
  * - an invalid flag whose default is the looser choice is set to the
  *   stricter value (`onlyIfExists`, `respectCwd` → false);
- * - a rule with an invalid `protection` becomes `noAccess`.
+ * - a rule with an invalid `protection` becomes `noAccess`;
+ * - a truthy non-boolean `regex`/`terminate` on deny/ask pattern lists is
+ *   kept as `true` — dropping it would silently disable a deny rule.
+ *   On allow lists, non-boolean `regex` is still dropped (fewer exceptions).
  */
 export function normalizeConfigShape(raw: unknown): {
   config: GuardrailsConfig;
@@ -24,6 +29,9 @@ export function normalizeConfigShape(raw: unknown): {
     return { config: {}, issues: ["config is not a JSON object"] };
   }
   const config = structuredClone(raw) as Record<string, unknown>;
+
+  // Strip prototype-pollution keys before any other processing.
+  stripProtoPollutionKeys(config, issues, "");
 
   for (const key of ["enabled", "applyBuiltinDefaults"]) {
     dropUnlessBoolean(config, key, key, issues);
@@ -50,6 +58,37 @@ type Record_ = Record<string, unknown>;
 
 function isObject(value: unknown): value is Record_ {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Recursively strip keys that could cause prototype pollution (`__proto__`,
+ * `constructor`, `prototype`). Called on the structuredClone before any other
+ * shape normalisation so that deepMerge never iterates over them.
+ */
+const PROTO_POLLUTION_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function stripProtoPollutionKeys(
+  node: unknown,
+  issues: string[],
+  path: string,
+): void {
+  if (Array.isArray(node)) {
+    for (let i = 0; i < node.length; i++) {
+      stripProtoPollutionKeys(node[i], issues, `${path}[${i}]`);
+    }
+  } else if (isObject(node)) {
+    for (const key of PROTO_POLLUTION_KEYS) {
+      if (Object.hasOwn(node, key)) {
+        delete node[key];
+        issues.push(
+          `${path ? `${path}.` : ""}${key} (prototype pollution key stripped)`,
+        );
+      }
+    }
+    for (const [key, value] of Object.entries(node)) {
+      stripProtoPollutionKeys(value, issues, path ? `${path}.${key}` : key);
+    }
+  }
 }
 
 function drop(target: Record_, key: string, label: string, issues: string[]) {
@@ -84,10 +123,27 @@ function normalizePattern(
   entry: unknown,
   label: string,
   issues: string[],
+  coerceBooleans = false,
 ): boolean {
   if (!isObject(entry) || typeof entry.pattern !== "string") return false;
-  dropUnlessBoolean(entry, "regex", `${label}.regex`, issues);
-  dropUnlessBoolean(entry, "terminate", `${label}.terminate`, issues);
+  if (coerceBooleans) {
+    // Deny/ask lists: a truthy non-boolean regex/terminate is kept as `true`.
+    // Dropping it would silently disable a deny rule.
+    for (const key of ["regex", "terminate"] as const) {
+      if (key in entry && typeof entry[key] !== "boolean") {
+        if (entry[key]) {
+          entry[key] = true;
+          issues.push(`${label}.${key} (coerced to true)`);
+        } else {
+          delete entry[key];
+          issues.push(`${label}.${key}`);
+        }
+      }
+    }
+  } else {
+    dropUnlessBoolean(entry, "regex", `${label}.regex`, issues);
+    dropUnlessBoolean(entry, "terminate", `${label}.terminate`, issues);
+  }
   dropUnlessString(entry, "description", `${label}.description`, issues);
   return true;
 }
@@ -98,6 +154,7 @@ function normalizePatternList(
   key: string,
   label: string,
   issues: string[],
+  coerceBooleans = false,
 ): void {
   if (!(key in owner)) return;
   const list = owner[key];
@@ -106,7 +163,7 @@ function normalizePatternList(
     return;
   }
   const valid = list.filter((entry, index) =>
-    normalizePattern(entry, `${label}[${index}]`, issues),
+    normalizePattern(entry, `${label}[${index}]`, issues, coerceBooleans),
   );
   if (valid.length !== list.length) {
     issues.push(`${label}[${list.length - valid.length} invalid entries]`);
@@ -124,14 +181,17 @@ function normalizePermissionGate(config: Record_, issues: string[]): void {
   for (const key of ["requireConfirmation", "useBuiltinMatchers"]) {
     dropUnlessBoolean(gate, key, `permissionGate.${key}`, issues);
   }
-  for (const key of [
-    "patterns",
-    "customPatterns",
-    "allowedPatterns",
-    "autoDenyPatterns",
-  ]) {
-    normalizePatternList(gate, key, `permissionGate.${key}`, issues);
+  for (const key of ["patterns", "customPatterns", "autoDenyPatterns"]) {
+    normalizePatternList(gate, key, `permissionGate.${key}`, issues, true);
   }
+  // allowedPatterns: drop non-boolean regex (fewer exceptions on allow lists).
+  normalizePatternList(
+    gate,
+    "allowedPatterns",
+    "permissionGate.allowedPatterns",
+    issues,
+    false,
+  );
 }
 
 const PROTECTIONS = new Set(["none", "readOnly", "noAccess"]);
@@ -175,12 +235,13 @@ function normalizePolicies(config: Record_, issues: string[]): void {
       "allowedPatterns",
       `${label}.allowedPatterns`,
       issues,
+      false, // allow list: drop non-boolean regex
     );
     if (!Array.isArray(rule.patterns)) {
       issues.push(`${label}.patterns (not a list)`);
       return false;
     }
-    normalizePatternList(rule, "patterns", `${label}.patterns`, issues);
+    normalizePatternList(rule, "patterns", `${label}.patterns`, issues, true); // coerce for deny list
     if ((rule.patterns as unknown[]).length === 0) {
       issues.push(`${label} (no valid patterns)`);
       return false;
