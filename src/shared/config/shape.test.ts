@@ -274,6 +274,28 @@ describe("loader shape checks", () => {
     expect(secretFiles?.enabled ?? true).toBe(true);
   });
 
+  it("leaves built-in Object.prototype members intact", async () => {
+    vi.stubEnv("PI_CODING_AGENT_DIR", AGENT);
+    const cwd = process.cwd();
+    const originalToString = Object.prototype.toString;
+    const originalHasOwn = Object.prototype.hasOwnProperty;
+    vol.fromJSON({
+      [GLOBAL]: '{"__proto__":{"toString":1,"hasOwnProperty":2,"injected":3}}',
+      [join(cwd, ".pi/extensions/guardrails.json")]:
+        '{"__proto__":{"valueOf":4}}',
+    });
+
+    const loader = createGuardrailsConfigLoader();
+    await loader.load();
+    await loader.save("memory", {});
+
+    expect(Object.prototype.toString).toBe(originalToString);
+    expect(Object.prototype.hasOwnProperty).toBe(originalHasOwn);
+    expect(typeof Object.prototype.valueOf).toBe("function");
+    expect(Object.hasOwn(Object.prototype, "injected")).toBe(false);
+    expect(String({})).toBe("[object Object]");
+  });
+
   it("keeps the rest of a global config when one value is malformed", async () => {
     vi.stubEnv("PI_CODING_AGENT_DIR", AGENT);
     const raw = {

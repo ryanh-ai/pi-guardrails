@@ -50,7 +50,7 @@ class GuardrailsConfigLoader extends ConfigLoader<
   override async load(): Promise<void> {
     await this.probeFiles();
     try {
-      await super.load();
+      await withPrototypeGuard(() => super.load());
     } catch (error) {
       // Reads and migrations never throw upstream; only the merge of a
       // malformed file can. remerge() merges cleaned copies instead.
@@ -80,7 +80,9 @@ class GuardrailsConfigLoader extends ConfigLoader<
       }
     }
     try {
-      await super.save(scope, ensureConfigVersion(config));
+      await withPrototypeGuard(() =>
+        super.save(scope, ensureConfigVersion(config)),
+      );
     } catch (error) {
       // The write happens before the merge; only a write failure or a bad
       // scope should surface. A malformed file breaking the merge is handled
@@ -116,16 +118,10 @@ class GuardrailsConfigLoader extends ConfigLoader<
   protected remerge(): void {
     const internals = this.internals();
 
-    // Strip __proto__/constructor/prototype keys from the raw configs in-place
-    // and undo any Object.prototype pollution from upstream's deepMerge in
-    // super.load(). Must run before we capture rawGlobal / rawLocal so the
-    // restored references are already clean.
-    removeProtoPollutionFromRaw(
-      internals.globalConfig as unknown as Record<string, unknown> | null,
-    );
-    removeProtoPollutionFromRaw(
-      internals.localConfig as unknown as Record<string, unknown> | null,
-    );
+    // Strip __proto__/constructor/prototype keys from the raw configs in
+    // place, so later merges (and saves) never see them.
+    stripPrototypeKeys(internals.globalConfig);
+    stripPrototypeKeys(internals.localConfig);
 
     const rawGlobal = internals.globalConfig;
     const rawLocal = internals.localConfig;
@@ -253,55 +249,49 @@ function isFileSystemError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error;
 }
 
-/**
- * Strip __proto__, constructor, and prototype keys from a raw config object
- * in place (so future deepMerge calls won't see them), and delete any
- * own properties they added to Object.prototype via upstream's deepMerge.
- *
- * Uses Object.getOwnPropertyDescriptor throughout to bypass the __proto__
- * accessor and operate on actual own properties.
- */
-const PROTO_POLLUTION_RAW_KEYS = [
-  "__proto__",
-  "constructor",
-  "prototype",
-] as const;
+const PROTOTYPE_KEYS = ["__proto__", "constructor", "prototype"];
 
-function removeProtoPollutionFromRaw(
-  obj: Record<string, unknown> | null | undefined,
-): void {
-  if (!obj || typeof obj !== "object") return;
-  for (const key of PROTO_POLLUTION_RAW_KEYS) {
-    const ownDesc = Object.getOwnPropertyDescriptor(obj, key);
-    if (!ownDesc) continue;
-    const injected = ownDesc.value;
-    if (injected && typeof injected === "object" && !Array.isArray(injected)) {
-      // The upstream deepMerge iterated injected's own keys and assigned them
-      // to Object.prototype.  Remove those own properties now.
-      for (const pollutedKey of Object.keys(injected as object)) {
-        const propDesc = Object.getOwnPropertyDescriptor(
-          Object.prototype,
-          pollutedKey,
-        );
-        if (propDesc?.configurable) {
-          try {
-            delete (Object.prototype as Record<string, unknown>)[pollutedKey];
-          } catch {
-            // Defensive: ignore if delete unexpectedly throws.
-          }
-        }
-      }
+/** Remove __proto__/constructor/prototype own keys, recursively, in place. */
+function stripPrototypeKeys(value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  for (const key of PROTOTYPE_KEYS) {
+    if (Object.hasOwn(value, key)) {
+      delete (value as Record<string, unknown>)[key];
     }
-    delete obj[key];
   }
-  // Recurse into remaining own enumerable child values.
-  for (const value of Object.values(obj)) {
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        removeProtoPollutionFromRaw(item as Record<string, unknown>);
+  for (const child of Object.values(value)) stripPrototypeKeys(child);
+}
+
+/**
+ * Run upstream's load/save, then restore Object.prototype exactly as it was.
+ * pi-utils-settings' deepMerge copies a parsed `"__proto__"` key onto
+ * Object.prototype (prototype pollution). Restoring a snapshot undoes only
+ * what the merge changed, and never deletes built-in members.
+ */
+async function withPrototypeGuard(run: () => Promise<void>): Promise<void> {
+  const proto = Object.prototype as Record<string | symbol, unknown>;
+  const before = new Map(
+    Reflect.ownKeys(proto).map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(proto, key),
+    ]),
+  );
+  try {
+    await run();
+  } finally {
+    for (const key of Reflect.ownKeys(proto)) {
+      if (!before.has(key)) delete proto[key];
+    }
+    for (const [key, descriptor] of before) {
+      const now = Object.getOwnPropertyDescriptor(proto, key);
+      if (
+        descriptor &&
+        (now?.value !== descriptor.value ||
+          now?.get !== descriptor.get ||
+          now?.set !== descriptor.set)
+      ) {
+        Object.defineProperty(proto, key, descriptor);
       }
-    } else if (value && typeof value === "object") {
-      removeProtoPollutionFromRaw(value as Record<string, unknown>);
     }
   }
 }
