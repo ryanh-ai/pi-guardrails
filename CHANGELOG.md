@@ -1,5 +1,24 @@
 # @aliou/pi-guardrails
 
+## 0.21.0
+
+### Minor Changes
+
+- b5a2b85: Add a built-in matcher for destructive git operations. It covers force pushes (including `+refspec`, quoted, and abbreviated flags), remote ref deletion, `--mirror`/`--prune` pushes, branch force-delete/rename/reset, `reset --hard`, `clean -f`, `worktree remove --force`, path checkout/restore, `switch --discard-changes`, and `stash drop/clear`.
+- 2ec8532: Check `interactive_shell` raw command launches with the permission gate, path access, and file protection policies, the same as `bash`.
+- 8d38528: Add `terminate` pattern option for permission-gate auto-deny rules (pi >= 0.84.1). Patterns can set `terminate: true` so a blocked call ends the agent's turn instead of yielding back to the model, preventing retry loops (e.g. sleep-polling). The turn only ends when every finalized blocked result in the batch sets the flag.
+
+  Also bumps dev dependencies to `@earendil-works/pi-coding-agent` / `@earendil-works/pi-tui` 1.4.0. Peer dependencies remain `"*"`.
+
+- 669126e: Respect pi's project trust for the project settings file. A trusted project's `.pi/extensions/guardrails.json` is honored as before. In an untrusted project, settings that would loosen protection are ignored and listed at session start: disabling features or confirmation, `customPatterns`, `allowedPatterns`, overriding built-in or global rule ids, and loosening path access. Settings that add protection still apply. Requires pi >= 0.84.3 (`ctx.isProjectTrusted()`); older pi keeps the previous behavior.
+
+### Patch Changes
+
+- d9c1ab0: Evaluate `autoDenyPatterns` before `allowedPatterns` and session grants. An allow rule or grant now only skips the confirmation prompt, so a broad or unanchored allow rule can no longer let an auto-denied command through.
+- 691f5da: Check settings file shapes before merging. Wrong-typed values are dropped or fixed toward the stricter setting, and reported at session start. Previously `"enabled": 0` silently disabled guardrails, and a malformed value such as a non-array `pathAccess.allowedPaths` could break config loading.
+- 0f88fb9: Report a settings file that exists but can't be read, such as a dangling symlink, a permission error, or invalid JSON. Previously it silently fell back to defaults. Guardrails now shows an error at session start and refuses to save over the file. Path-access "always" grants fall back to the current session.
+- 1429788: Built-in dangerous-command matchers now see through common wrappers (`env`, `command`, `exec`, `nice`, `nohup`, `timeout`, `xargs`, `stdbuf`) and path-qualified commands (`/bin/rm`, `/usr/bin/git`). Previously `env FOO=1 rm -rf build` or `/bin/rm -rf build` was not matched.
+
 ## 0.20.0
 
 ### Minor Changes
