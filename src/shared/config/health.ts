@@ -4,7 +4,8 @@ import { dirname } from "node:path";
 /**
  * Health of one settings file.
  *
- * - `absent`: nothing at the path. Running on defaults is expected.
+ * - `absent`: nothing at the path (or an empty file). Running on defaults is
+ *   expected.
  * - `ok`: the file reads and parses as a JSON object.
  * - `broken`: something is at the path but can't be used, for example a
  *   dangling symlink (its volume is unmounted), a permission error, or
@@ -82,6 +83,8 @@ export async function probeConfigFile(path: string): Promise<ConfigFileState> {
   } catch (error) {
     return { state: "broken", path, reason: `cannot read: ${String(error)}` };
   }
+  // An empty file holds nothing to lose; treat it like a missing one.
+  if (!content.trim()) return { state: "absent", path };
   try {
     const parsed: unknown = JSON.parse(content);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {

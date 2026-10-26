@@ -2,12 +2,9 @@ import { join } from "node:path";
 import { vol } from "memfs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import pkg from "../../../package.json" with { type: "json" };
-import {
-  configLoader,
-  createGuardrailsConfigLoader,
-  syncProjectTrust,
-} from "./loader";
+import { configLoader, createGuardrailsConfigLoader } from "./loader";
 import { sanitizeUntrustedLocal } from "./local-scope";
+import { syncProjectTrust } from "./trust";
 
 const AGENT = "/tmp/pi-agent-trust";
 const GLOBAL = `${AGENT}/extensions/guardrails.json`;

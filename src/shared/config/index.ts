@@ -1,6 +1,7 @@
 export { DEFAULT_CONFIG } from "./defaults";
-export { configLoader, syncProjectTrust } from "./loader";
+export { configLoader } from "./loader";
 export { globalConfigMigrations, migrations } from "./migration";
+export { syncProjectTrust } from "./trust";
 export type {
   AllowedPath,
   DangerousPattern,
