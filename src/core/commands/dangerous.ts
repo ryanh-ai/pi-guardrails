@@ -304,10 +304,11 @@ const containerMatcher: StructuralMatcher = (words) => {
 // =============================================================================
 
 /**
- * Destructive or code-executing git: force pushes (incl. +refspec, quoted
- * or abbreviated flags), remote ref deletion, --mirror/--prune, branch
- * force-delete, reset --hard, clean -f, path checkout/restore, stash
- * drop/clear, and -c / --upload-pack / --receive-pack / --exec overrides.
+ * Destructive git: force pushes (incl. +refspec, quoted or abbreviated
+ * flags), remote ref deletion, --mirror/--prune, branch force-delete or
+ * reset, reset --hard, clean -f, worktree remove --force, path
+ * checkout/restore, switch --discard-changes, and stash drop/clear. See
+ * git.ts.
  */
 const gitMatcher: StructuralMatcher = (words) => gitRisk(words);
 
@@ -377,12 +378,14 @@ export const BUILTIN_KEYWORD_PATTERNS = new Set([
 export function matchDangerousCommand(
   words: string[],
 ): DangerousCommandMatch | undefined {
-  for (const matcher of BUILTIN_MATCHERS) {
-    const description = matcher(words);
-    if (description) {
-      // Use the command itself as the pattern identifier
-      const pattern = words[0] ?? "unknown";
-      return { description, pattern };
+  for (const level of commandLevels(words)) {
+    for (const matcher of BUILTIN_MATCHERS) {
+      const description = matcher(level);
+      if (description) {
+        // Use the command itself as the pattern identifier
+        const pattern = level[0] ?? "unknown";
+        return { description, pattern };
+      }
     }
   }
   return undefined;

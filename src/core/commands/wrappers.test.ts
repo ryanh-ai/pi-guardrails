@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkDangerousCommand } from "./dangerous";
+import { checkDangerousCommand, matchDangerousCommand } from "./dangerous";
 import { commandLevels } from "./wrappers";
 
 function check(command: string): string | undefined {
@@ -87,5 +87,19 @@ describe("built-in matchers through wrappers", () => {
     ]) {
       expect(check(command)).toBeUndefined();
     }
+  });
+});
+
+describe("matchDangerousCommand", () => {
+  it("also sees through wrappers and paths", () => {
+    expect(matchDangerousCommand(["env", "X=1", "rm", "-rf", "build"])).toEqual(
+      {
+        description: "recursive force delete",
+        pattern: "rm",
+      },
+    );
+    expect(
+      matchDangerousCommand(["/usr/bin/git", "reset", "--hard"])?.pattern,
+    ).toBe("git");
   });
 });
